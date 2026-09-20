@@ -86,15 +86,40 @@ void ServiceEngine::startMonitoring() {
 
     std::string root = config_.scanRoot;
 
-    // Exclude app's own cache directory from FSEvents
+    // Exclude app's own cache directory and high-churn system paths from FSEvents
+    std::vector<std::string> exclusions;
     std::string cacheExclusion = config_.cachePath;
-    if (cacheExclusion.empty()) {
-        const char* home = std::getenv("HOME");
-        if (home) cacheExclusion = std::string(home) + "/Library/Caches/com.maceverything.app";
+    const char* home = std::getenv("HOME");
+    std::string homeStr = home ? home : "";
+
+    if (cacheExclusion.empty() && !homeStr.empty()) {
+        cacheExclusion = homeStr + "/Library/Caches/com.maceverything.app";
     }
     if (!cacheExclusion.empty()) {
-        watcher_->setExclusionPaths({cacheExclusion});
+        exclusions.push_back(cacheExclusion);
     }
+
+    if (!homeStr.empty()) {
+        exclusions.push_back(homeStr + "/Library/Caches");
+        exclusions.push_back(homeStr + "/Library/Biome");
+        exclusions.push_back(homeStr + "/Library/Logs");
+    }
+    exclusions.push_back("/private/var/db");
+    exclusions.push_back("/private/var/log");
+
+    // If scanning a specific subtree (e.g. unit tests running in a temp directory),
+    // do not exclude any path overlapping scanRoot.
+    if (root != "/") {
+        exclusions.erase(
+            std::remove_if(exclusions.begin(), exclusions.end(), [&](const std::string& ep) {
+                return root.size() >= ep.size() ? (root.compare(0, ep.size(), ep) == 0)
+                                                : (ep.compare(0, root.size(), root) == 0);
+            }),
+            exclusions.end()
+        );
+    }
+
+    watcher_->setExclusionPaths(exclusions);
 
     watcher_->start(root, [this](std::vector<FileSystemWatcher::Event> events) {
         if (shuttingDown_.load(std::memory_order_relaxed)) return;

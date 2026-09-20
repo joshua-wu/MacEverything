@@ -292,11 +292,12 @@ class SearchViewModel: ObservableObject {
                 ))
             }
 
+            let finalItems = items
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
                 self.cachedResults = results
                 self.loadedCount = firstPageCount
-                self.displayItems = items
+                self.displayItems = finalItems
                 self.totalMatches = totalCount
                 self.queryTimeMs = elapsed
             }
@@ -324,10 +325,11 @@ class SearchViewModel: ObservableObject {
                 ))
             }
 
+            let finalItems = items
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
-                self.contentResults = items
-                self.totalMatches = items.count
+                self.contentResults = finalItems
+                self.totalMatches = finalItems.count
                 self.queryTimeMs = elapsed
             }
         }
@@ -357,12 +359,13 @@ class SearchViewModel: ObservableObject {
                 ))
             }
 
+            let finalNewItems = newItems
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else {
                     self?.isLoadingMore = false
                     return
                 }
-                self.displayItems.append(contentsOf: newItems)
+                self.displayItems.append(contentsOf: finalNewItems)
                 self.loadedCount = nextEnd
                 self.isLoadingMore = false
             }
@@ -386,9 +389,10 @@ class SearchViewModel: ObservableObject {
                     type: r.type, size: r.size, modTime: r.modTime
                 ))
             }
+            let finalItems = items
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
-                self.displayItems = items
+                self.displayItems = finalItems
                 self.showingRecent = true
             }
         }
