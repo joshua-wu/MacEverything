@@ -3,6 +3,19 @@
 #include <algorithm>
 #include <unordered_set>
 
+// Insert into a sorted posting list. Grows capacity by ~12.5% instead of
+// doubling: most lists are large, long-lived and receive few inserts.
+static void insertSorted(std::vector<uint32_t>& list, uint32_t idx) {
+    auto pos = std::lower_bound(list.begin(), list.end(), idx);
+    if (pos != list.end() && *pos == idx) return;
+    if (list.size() == list.capacity()) {
+        size_t off = static_cast<size_t>(pos - list.begin());
+        list.reserve(list.size() + list.size() / 8 + 4);
+        pos = list.begin() + static_cast<std::ptrdiff_t>(off);
+    }
+    list.insert(pos, idx);
+}
+
 // ---------------------------------------------------------------------------
 // Trigram posting list intersection utilities
 // ---------------------------------------------------------------------------
@@ -126,6 +139,7 @@ SearchEngine::buildTrigramIndexFromData(const std::vector<uint8_t>& types,
     }
     for (auto& [trigram, list] : index) {
         std::sort(list.begin(), list.end());
+        list.shrink_to_fit();
     }
     return index;
 }
@@ -141,17 +155,19 @@ void SearchEngine::addTrigramsForRecord(uint32_t idx, const char* data, uint16_t
     trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
 
     for (Trigram t : trigrams) {
-        auto& list = nameTrigramIndex_[t];
-        // Insert in sorted position to maintain sorted posting lists
-        auto pos = std::lower_bound(list.begin(), list.end(), idx);
-        list.insert(pos, idx);
+        insertSorted(nameTrigramIndex_[t], idx);
     }
 }
 
 void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
     if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
     // Recompute trigrams from namePool_ instead of storing per-record lists
-    auto trigrams = ContentIndex::extractTrigrams(std::string(namePool_.data(idx), namePool_.length(idx)));
+    removeTrigramsForName(idx, namePool_.view(idx));
+}
+
+void SearchEngine::removeTrigramsForName(uint32_t idx, std::string_view lowerName) {
+    if (lowerName.empty()) return;
+    auto trigrams = ContentIndex::extractTrigrams(std::string(lowerName));
     std::sort(trigrams.begin(), trigrams.end());
     trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
     for (Trigram t : trigrams) {
@@ -197,6 +213,7 @@ SearchEngine::buildExtensionIndexFromData(const std::vector<uint8_t>& types,
         }
     }
     // Posting lists are already in order since we iterate i = 0..N
+    for (auto& [_, list] : index) list.shrink_to_fit();
     return index;
 }
 
@@ -208,14 +225,16 @@ void SearchEngine::addExtensionForRecord(uint32_t idx) {
     if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
     std::string ext = extractExtFromName(namePool_.data(idx), namePool_.length(idx));
     if (ext.empty()) return;
-    auto& list = extensionIndex_[ext];
-    auto pos = std::lower_bound(list.begin(), list.end(), idx);
-    list.insert(pos, idx);
+    insertSorted(extensionIndex_[ext], idx);
 }
 
 void SearchEngine::removeExtensionForRecord(uint32_t idx) {
     if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
-    std::string ext = extractExtFromName(namePool_.data(idx), namePool_.length(idx));
+    removeExtensionForName(idx, namePool_.view(idx));
+}
+
+void SearchEngine::removeExtensionForName(uint32_t idx, std::string_view lowerName) {
+    std::string ext = extractExtFromName(lowerName.data(), static_cast<uint16_t>(lowerName.size()));
     if (ext.empty()) return;
     auto it = extensionIndex_.find(ext);
     if (it != extensionIndex_.end()) {
@@ -249,6 +268,7 @@ SearchEngine::buildPathTrigramIndexFromData(const StringPool& lowerPathPool) {
     }
     for (auto& [_, list] : index) {
         std::sort(list.begin(), list.end());
+        list.shrink_to_fit();
     }
     return index;
 }
@@ -267,6 +287,7 @@ SearchEngine::buildPathIdxToRecordsFromData(const std::vector<uint8_t>& types,
     }
     for (auto& list : mapping) {
         std::sort(list.begin(), list.end());
+        list.shrink_to_fit();
     }
     return mapping;
 }
@@ -286,9 +307,7 @@ void SearchEngine::addPathTrigramsForRecord(uint32_t idx) {
     if (pi >= pathIdxToRecords_.size()) {
         pathIdxToRecords_.resize(pi + 1);
     }
-    auto& list = pathIdxToRecords_[pi];
-    auto pos = std::lower_bound(list.begin(), list.end(), idx);
-    list.insert(pos, idx);
+    insertSorted(pathIdxToRecords_[pi], idx);
 }
 
 void SearchEngine::removePathTrigramsForRecord(uint32_t idx) {
@@ -309,11 +328,7 @@ void SearchEngine::ensurePathTrigramsForPathIdx(uint32_t pathIdx) {
     std::sort(trigrams.begin(), trigrams.end());
     trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
     for (Trigram t : trigrams) {
-        auto& list = pathTrigramIndex_[t];
-        auto pos = std::lower_bound(list.begin(), list.end(), pathIdx);
-        if (pos == list.end() || *pos != pathIdx) {
-            list.insert(pos, pathIdx);
-        }
+        insertSorted(pathTrigramIndex_[t], pathIdx);
     }
 }
 

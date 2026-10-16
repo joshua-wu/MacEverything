@@ -7,6 +7,17 @@
 #include <unordered_map>
 #include <algorithm>
 
+/// Reserve room for `extra` more elements, growing by ~1/16 instead of the
+/// default doubling. Index columns hold millions of entries and are loaded at
+/// exact size, so doubling on the first append after load would waste
+/// hundreds of MB; amortized cost stays O(1) with a geometric factor.
+template <class T>
+inline void reserveForAppend(std::vector<T>& v, size_t extra = 1) {
+    size_t need = v.size() + extra;
+    if (need <= v.capacity()) return;
+    v.reserve(std::max(need, v.size() + v.size() / 16 + 64));
+}
+
 /// Contiguous memory pool for strings.
 /// All strings are stored end-to-end in a single char buffer.
 /// Each string is referenced by an Entry {offset, length}.
@@ -28,6 +39,8 @@ public:
     uint32_t append(const char* data, uint16_t len) {
         uint32_t idx = static_cast<uint32_t>(entries_.size());
         uint32_t off = static_cast<uint32_t>(buffer_.size());
+        reserveForAppend(buffer_, len);
+        reserveForAppend(entries_);
         buffer_.insert(buffer_.end(), data, data + len);
         entries_.push_back({off, len});
         return idx;

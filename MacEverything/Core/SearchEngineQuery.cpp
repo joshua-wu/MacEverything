@@ -117,13 +117,11 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
         std::string parentPath = pathPool_.str(pathIndices_[dirIdx]);
         std::string fullDirPath = parentPath;
         if (!fullDirPath.empty() && fullDirPath.back() != '/') fullDirPath += '/';
-        fullDirPath += std::string(namePool_.data(dirIdx), namePool_.length(dirIdx));
+        fullDirPath += origNamePool_.view(dirIdx);
 
         // Look up this full path in pathLookup_ to find its pathPool index
-        auto it = pathLookup_.find(fullDirPath);
-        if (it == pathLookup_.end()) continue;
-
-        uint32_t childPathIdx = it->second;
+        uint32_t childPathIdx = pathLookup_.get(fullDirPath, poolKeyOf(pathPool_));
+        if (childPathIdx == UINT32_MAX) continue;
         if (childPathIdx >= pathIdxToRecords_.size()) continue;
 
         const auto& childRecords = pathIdxToRecords_[childPathIdx];

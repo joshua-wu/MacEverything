@@ -34,68 +34,8 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
     inodes_ = std::move(inodes);
     devIds_ = std::move(devIds);
 
-    // Rebuild pathLookup_ and lowerPathLookup_ from pathPool_ entries
-    pathLookup_.clear();
-    lowerPathLookup_.clear();
-    pathLookup_.reserve(pathPool_.entryCount());
-    lowerPathLookup_.reserve(pathPool_.entryCount());
-    for (uint32_t i = 0; i < pathPool_.entryCount(); i++) {
-        if (pathPool_.isLive(i)) {
-            pathLookup_[pathPool_.str(i)] = i;
-            lowerPathLookup_[lowerPathPool_.str(i)] = i;
-        }
-    }
-
-    // Build pathIndex_ (lowercase full path -> record index)
-    // Parallelize full-path construction using string_view to avoid allocations
-    unsigned numThreads = std::thread::hardware_concurrency();
-    if (numThreads < 1) numThreads = 1;
-    if (numThreads > 32) numThreads = 32;
-    size_t chunkSize = (n + numThreads - 1) / numThreads;
-    std::vector<std::string> loweredPaths(n);
-    {
-        std::vector<std::thread> pathThreads;
-        pathThreads.reserve(numThreads);
-        for (unsigned t = 0; t < numThreads; t++) {
-            size_t start = t * chunkSize;
-            size_t end = std::min(start + chunkSize, static_cast<size_t>(n));
-            if (start >= end) break;
-            pathThreads.emplace_back([this, &loweredPaths, start, end] {
-                for (size_t i = start; i < end; i++) {
-                    uint32_t idx = static_cast<uint32_t>(i);
-                    loweredPaths[i] = makeFullPath(lowerPathPool_.view(pathIndices_[idx]),
-                                                   namePool_.view(idx));
-                }
-            });
-        }
-        for (auto& th : pathThreads) th.join();
-    }
-
-    // Insert into pathIndex_ and merge tombstone dedup (last-wins overwrites)
-    pathIndex_.clear();
-    pathIndex_.reserve(n);
-    for (uint32_t i = 0; i < n; i++) {
-        if (types_[i] == 0) continue;
-        pathIndex_[std::move(loweredPaths[i])] = i;
-    }
-
-    // Tombstone orphaned duplicates: records not in pathIndex_ as winners
-    uint32_t actualLive = 0;
-    {
-        // Collect winner indices from pathIndex_ values
-        std::vector<bool> isWinner(n, false);
-        for (const auto& [_, idx] : pathIndex_) {
-            isWinner[idx] = true;
-        }
-        for (uint32_t i = 0; i < n; i++) {
-            if (types_[i] == 0) continue;
-            if (isWinner[i]) {
-                actualLive++;
-            } else {
-                tombstoneAt(i);
-            }
-        }
-    }
+    rebuildPathLookupsUnlocked();
+    uint32_t actualLive = rebuildPathIndexUnlocked();
 
     liveCount_.store(actualLive, std::memory_order_relaxed);
 
@@ -157,29 +97,29 @@ void SearchEngine::completePhase2() {
         recentCache_ = std::move(recentCache);
         extensionIndex_ = std::move(extensionIndex);
 
+        // Replay tombstones: records live in the snapshot but deleted during build.
+        // namePool_[i] is already tombstoned, so use the snapshot name.
+        uint32_t replayCount = 0;
+        for (uint32_t i = 0; i < snapSize && i < types_.size(); i++) {
+            if (snapTypes[i] != 0 && types_[i] == 0) {
+                removeTrigramsForName(i, snapNamePool.view(i));
+                removeExtensionForName(i, snapNamePool.view(i));
+                removePathTrigramsForRecord(i);
+                replayCount++;
+            }
+        }
+
         // Replay records added during Phase 2 build
         uint32_t currentSize = static_cast<uint32_t>(types_.size());
-        uint32_t replayCount = 0;
         for (uint32_t i = snapSize; i < currentSize; i++) {
             if (types_[i] == 0) continue;
-            // Add trigrams for this record
             addTrigramsForRecord(i, namePool_.data(i), namePool_.length(i));
             addPathTrigramsForRecord(i);
             addExtensionForRecord(i);
-            addToRecentCache(i, static_cast<time_t>(modTimes_[i]));
             replayCount++;
         }
-
-        // Replay tombstones: records that were live in snapshot but deleted during build
-        for (uint32_t i = 0; i < snapSize; i++) {
-            if (i >= types_.size()) break;
-            if (snapTypes[i] != 0 && types_[i] == 0) {
-                // Was live in snapshot, now tombstoned — trigram was built, need to remove
-                // The trigram entry points at index i which is now tombstoned.
-                // Query-time type==0 check will filter it, but we can clean up explicitly.
-                removeTrigramsForRecord(i);  // Safe: namePool_[i] is tombstoned, this is a no-op
-            }
-        }
+        // In-place metadata updates during the build may have changed mod times.
+        rebuildRecentCache();
 
         phase2Pending_.store(false, std::memory_order_release);
 

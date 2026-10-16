@@ -3,6 +3,7 @@
 #include "ContentIndex.h" // for Trigram type and extractTrigrams/makeTrigram
 #include "StringPool.h"
 #include "SIMDSearch.h"
+#include "FlatKeyIndex.h"
 #include <vector>
 #include <string>
 #include <string_view>
@@ -382,9 +383,10 @@ private:
     std::vector<int64_t>  modTimes_;       // modification time (Unix epoch)
     std::vector<uint64_t> inodes_;         // inode number
     std::vector<int32_t>  devIds_;         // device ID
-    std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
-    std::unordered_map<std::string, uint32_t> lowerPathLookup_; // lowered path -> pathPool_ index
-    std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
+    // Key-less hash indices: keys are re-derived from the pools above (see FlatKeyIndex).
+    FlatKeyIndex pathLookup_;      // path string -> pathPool_ index
+    FlatKeyIndex lowerPathLookup_; // lowered path -> pathPool_ index
+    FlatKeyIndex pathIndex_;       // lowercase fullPath -> live record index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
 
@@ -397,6 +399,45 @@ private:
 
     // Extension index: extension string -> sorted record indices (files only)
     std::unordered_map<std::string, std::vector<uint32_t>> extensionIndex_;
+
+    /// Key accessors for the FlatKeyIndex members.
+    static FlatKeyIndex::KeyParts recordKeyParts(std::string_view lowerDir, std::string_view lowerName) {
+        return {lowerDir, lowerName, !(lowerDir.empty() || lowerDir.back() == '/')};
+    }
+    auto recordKeyOf() const {
+        return [this](uint32_t i) {
+            return recordKeyParts(lowerPathPool_.view(pathIndices_[i]), namePool_.view(i));
+        };
+    }
+    static auto poolKeyOf(const StringPool& pool) {
+        return [&pool](uint32_t i) { return FlatKeyIndex::KeyParts{pool.view(i), {}, false}; };
+    }
+    /// Live record index for a lowercase full path, or UINT32_MAX.
+    uint32_t findRecordUnlocked(std::string_view lowerFull) const {
+        return pathIndex_.get(lowerFull, recordKeyOf());
+    }
+    /// Rebuild pathIndex_ from the live records; tombstones losing duplicates.
+    /// Returns the live count.
+    uint32_t rebuildPathIndexUnlocked();
+    /// Rebuild pathLookup_/lowerPathLookup_ from the path pools.
+    void rebuildPathLookupsUnlocked();
+
+    /// Remove a live record from every index and tombstone it.
+    void removeRecordUnlocked(uint32_t idx, bool writeWal);
+
+    /// Append a new live record and index it (no WAL write). Returns its index.
+    uint32_t appendRecordUnlocked(FileRecord&& rec);
+    /// Insert or update the record at fullPath (no WAL write). Updates of an
+    /// existing record with the same name and type are applied in place, so
+    /// content changes do not create tombstones.
+    void upsertUnlocked(const std::string& fullPath, FileRecord&& rec);
+    /// Remove idx from the name trigram / extension indices given its lowercase name.
+    void removeTrigramsForName(uint32_t idx, std::string_view lowerName);
+    void removeExtensionForName(uint32_t idx, std::string_view lowerName);
+
+    /// Indices of live records whose lowercase full path equals one of the
+    /// prefixes or lies beneath it.
+    std::vector<uint32_t> collectSubtreeUnlocked(const std::vector<std::string>& lowerPrefixes) const;
 
     /// Intern a directory path into pathPool_ and lowerPathPool_. Returns pathPool_ index.
     /// Deduplicates via pathLookup_. Must be called under unique_lock.

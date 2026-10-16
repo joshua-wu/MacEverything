@@ -42,6 +42,7 @@ namespace fs = std::filesystem;
 #include "tests/test_helpers.h"
 #include "tests/test_scan_query.h"
 #include "tests/test_mutation.h"
+#include "tests/test_subtree_mutation.h"
 #include "tests/test_path_search.h"
 #include "tests/test_metadata.h"
 #include "tests/test_compaction.h"
@@ -202,7 +203,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "72", "73", "74", "75", "76"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "3f", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "72", "73", "74", "75", "76"});
         } else if (arg == "--bench") {
             explicitSelection = true;
             selectedParts.insert({"44", "46"});
@@ -228,7 +229,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "73", "74", "76"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "3f", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "73", "74", "76"};
     }
 
     // Validate root path if scan test is selected
@@ -258,6 +259,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("3c")) runIndexMetadataTests();
     if (selectedParts.count("3d")) runCompactionTests();
     if (selectedParts.count("3e")) runSearchRankingTests();
+    if (selectedParts.count("3f")) runSubtreeMutationTests();
     if (selectedParts.count("4"))  runFSEventsTest();
     if (selectedParts.count("5"))  runThreadSafetyTest();
     if (selectedParts.count("6"))  runEndToEndTest();

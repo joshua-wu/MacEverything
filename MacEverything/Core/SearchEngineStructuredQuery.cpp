@@ -84,10 +84,8 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
     fullDirPath += std::string(namePool_.data(dirIdx), namePool_.length(dirIdx));
 
     // Look up children of this directory
-    auto it = lowerPathLookup_.find(fullDirPath);
-    if (it == lowerPathLookup_.end()) return;
-
-    uint32_t childPathIdx = it->second;
+    uint32_t childPathIdx = lowerPathLookup_.get(fullDirPath, poolKeyOf(lowerPathPool_));
+    if (childPathIdx == UINT32_MAX) return;
     if (childPathIdx >= pathIdxToRecords_.size()) return;
     const auto& childRecords = pathIdxToRecords_[childPathIdx];
 

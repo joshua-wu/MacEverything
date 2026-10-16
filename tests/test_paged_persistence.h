@@ -107,9 +107,9 @@ static void testPagedIncrementalFlush() {
     updated.devId = 1;
     engine->updateByPath("/data/f1024.txt", std::move(updated));
 
-    // updateByPath tombstones old record (page 1) and appends new at end (page 3)
+    // Same name and path: updateByPath rewrites the record in place (page 1 only)
     auto dirtyPages = engine->getDirtyPageNumbers();
-    check(dirtyPages.size() == 2, "P32-2: 2 dirty pages after update (old page + new append page)");
+    check(dirtyPages.size() == 1, "P32-2: 1 dirty page after in-place update");
     // Verify page 1 (old record) is dirty
     bool hasPage1 = false;
     for (auto p : dirtyPages) { if (p == 1) hasPage1 = true; }
@@ -130,7 +130,7 @@ static void testPagedIncrementalFlush() {
     IndexMetadata loadedMeta;
     check(reader.load(*engine2, &loadedMeta), "P32-2: reload succeeds");
     check(loadedMeta.lastEventId == 2, "P32-2: lastEventId updated to 2");
-    // updateByPath tombstones old + appends new, so total records = 3073
+    // updateByPath updated the record in place, so total records stay 3072
     // loadRecords correctly counts only live records (skipping tombstones)
     check(engine2->liveRecordCount() == 3072, "P32-2: 3072 live records (tombstone excluded)");
 
@@ -360,10 +360,8 @@ static void testPagedAdaptiveInterval() {
     check(IndexPersistence::kWALSizeFlushThreshold == 2 * 1024 * 1024, "P32-6: WAL threshold = 2MB");
 
     // Verify that dirty page tracking works correctly across pages
-    // updateByPath tombstones old record + appends new at end
-    // Update a0.txt: tombstone page 0, new record appended at page 10
-    // Update a5120.txt: tombstone page 5, new record appended at page 10
-    // So dirty pages: 0, 5, 10 (3 pages)
+    // updateByPath with an unchanged name/path updates in place:
+    // a0.txt dirties page 0, a5120.txt dirties page 5 (2 pages)
     FileRecord upd1;
     upd1.name = "a0.txt"; upd1.path = "/data"; upd1.type = 1;
     upd1.size = 999; upd1.modTime = 2000000; upd1.inode = 1; upd1.devId = 1;
@@ -375,13 +373,13 @@ static void testPagedAdaptiveInterval() {
     engine->updateByPath("/data/a5120.txt", std::move(upd2));
 
     auto dirtyPages = engine->getDirtyPageNumbers();
-    check(dirtyPages.size() == 3, "P32-6: 3 dirty pages (page 0, 5, and 10 for appended records)");
+    check(dirtyPages.size() == 2, "P32-6: 2 dirty pages (page 0 and 5, updated in place)");
 
-    // With 3/11 pages dirty (~27%), should be in the high range (> 0.1)
+    // With 2/10 pages dirty (20%), should be in the mid range (> 0.1)
     double totalPages = (engine->liveRecordCount() + SearchEngine::kRecordsPerPage - 1) / SearchEngine::kRecordsPerPage;
     double dirtyRatio = static_cast<double>(dirtyPages.size()) / totalPages;
     check(dirtyRatio > 0.1 && dirtyRatio <= 0.3,
-          "P32-6: dirty ratio ~27% in mid-range (should yield 150s interval)");
+          "P32-6: dirty ratio ~20% in mid-range (should yield 150s interval)");
 
     fs::remove_all(tmpDir);
 }
