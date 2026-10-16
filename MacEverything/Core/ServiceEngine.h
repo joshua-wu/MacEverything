@@ -105,6 +105,7 @@ private:
                               std::shared_ptr<SearchEngine> engine);
 
     // ── Static helpers ──
+    std::vector<std::string> fsEventExclusions() const;
     static bool isInsideAppBundle(const std::string& path);
     static bool pathEndsWithApp(const std::string& path);
 
