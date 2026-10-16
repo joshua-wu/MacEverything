@@ -258,6 +258,11 @@ public:
     /// Records per page for paged persistence
     static constexpr uint32_t kRecordsPerPage = 1024;
 
+    /// Linear scans build per-directory match caches from this many records up.
+    static constexpr size_t kDirCacheMinRecords = 20000;
+    /// Test hook: override the record threshold for per-directory caches.
+    void setDirCacheMinRecords(size_t n) { dirCacheMinRecords_ = n; }
+
     /// Get the list of dirty page numbers (pages modified since last clearDirtyPages). Thread-safe.
     std::vector<uint32_t> getDirtyPageNumbers() const;
 
@@ -506,6 +511,11 @@ public:
     /// Check if a directory path matches the path segment constraints.
     static bool pathSegmentsMatch(std::string_view dirPath,
                                   const std::vector<PathSegment>& segments);
+    /// pathSegmentsMatch starting with segments[0..segIdx] still unmatched,
+    /// as if segments after segIdx were already matched further right.
+    static bool pathSegmentsMatchFrom(std::string_view dirPath,
+                                      const std::vector<PathSegment>& segments,
+                                      int segIdx);
 private:
 
     /// Estimate trigram candidate count for a keyword (min posting list size).
@@ -538,6 +548,7 @@ private:
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};
     bool trigramIndexEnabled_ = false;
+    size_t dirCacheMinRecords_ = kDirCacheMinRecords;
 
     // Phase 2 two-stage startup: trigram indices built in background
     std::atomic<bool> phase2Pending_{false};

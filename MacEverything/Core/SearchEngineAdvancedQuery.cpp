@@ -95,6 +95,28 @@ static bool isWholeWordMatch(const char* text, size_t textLen,
 /// Uses RE2 for guaranteed linear-time matching (no backtracking).
 using RegexCache = std::unordered_map<const QueryNode*, std::unique_ptr<re2::RE2>>;
 
+/// Per-query, per-directory match results. A substring without '/' occurs in
+/// "dir/name" iff it occurs in dir or in name, so the directory half can be
+/// evaluated once per directory (~10x fewer than records) instead of once per
+/// record, and records only need the name check plus a bitmap lookup.
+/// Path-segment filters are cached the same way for both possible matcher
+/// states after the name component (see pathSegmentsMatchFrom).
+struct DirMatchCache {
+    struct Entry {
+        const QueryNode* node;
+        std::vector<uint8_t> hit;     // term/path: dir contains text; __pathseg: name skipped
+        std::vector<uint8_t> hitAlt;  // __pathseg only: name matched the last segment
+    };
+    std::vector<Entry> entries;
+
+    const Entry* find(const QueryNode* n) const {
+        for (const auto& e : entries) {
+            if (e.node == n) return &e;
+        }
+        return nullptr;
+    }
+};
+
 /// Collect all REGEX TERM nodes from the AST for pre-compilation.
 static void collectRegexNodes(const QueryNode& node, std::vector<const QueryNode*>& out) {
     if (node.type == QueryNodeType::TERM && node.mode == MatchMode::REGEX) {
@@ -133,12 +155,20 @@ static bool evalFilter(const QueryNode& node,
                        uint8_t recType, uint64_t recSize, time_t recModTime,
                        const char* nameData, uint16_t nameLen,
                        const char* pathData, uint16_t pathLen,
-                       std::vector<char>& pathBuf) {
+                       std::vector<char>& pathBuf,
+                       const DirMatchCache* dirCache = nullptr, uint32_t pathIdx = 0) {
     const auto& name = node.filterName;
 
     // __pathseg: internal filter — structured path segment matching
     if (name == "__pathseg") {
         if (!nameData || !pathData) return true;
+        if (const auto* e = dirCache ? dirCache->find(&node) : nullptr) {
+            // The name is the last path component; the matcher consumes it
+            // first (right-to-left), then continues on the directory.
+            const auto& last = node.pathSegments.back().text;
+            bool nameHit = std::string_view(nameData, nameLen).find(last) != std::string_view::npos;
+            return (nameHit ? e->hitAlt : e->hit)[pathIdx] != 0;
+        }
         // Build full path: pathData/nameData for component-level matching
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
@@ -185,6 +215,10 @@ static bool evalFilter(const QueryNode& node,
     // path: — path must contain substring (case insensitive, requires path data)
     if (name == "path") {
         if (!nameData || !pathData) return true;
+        if (const auto* e = dirCache ? dirCache->find(&node) : nullptr) {
+            return e->hit[pathIdx] || me::simdContains(nameData, nameLen,
+                node.filterArg.data(), node.filterArg.size());
+        }
         // Build full path: pathData + '/' + nameData
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
@@ -198,6 +232,10 @@ static bool evalFilter(const QueryNode& node,
     // nopath: — path must NOT contain substring (requires path data)
     if (name == "nopath") {
         if (!nameData || !pathData) return true;
+        if (const auto* e = dirCache ? dirCache->find(&node) : nullptr) {
+            return !(e->hit[pathIdx] || me::simdContains(nameData, nameLen,
+                node.filterArg.data(), node.filterArg.size()));
+        }
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
         memcpy(pathBuf.data(), pathData, pathLen);
@@ -263,7 +301,8 @@ static bool evalTerm(const QueryNode& node,
                      const char* origNameData, uint16_t origNameLen,
                      const char* origPathData, uint16_t origPathLen,
                      std::vector<char>& pathBuf,
-                     const RegexCache& regexCache) {
+                     const RegexCache& regexCache,
+                     const DirMatchCache* dirCache = nullptr, uint32_t pathIdx = 0) {
     if (!nameData) return false; // SoA pure-filter path — no string data available
     switch (node.mode) {
 
@@ -280,6 +319,7 @@ static bool evalTerm(const QueryNode& node,
             }
             // Check full path (original case: origPath + "/" + origName)
             if (node.nameOnly) return false;
+            if (const auto* e = dirCache ? dirCache->find(&node) : nullptr) return e->hit[pathIdx] != 0;
             size_t fullLen = static_cast<size_t>(origPathLen) + 1 + origNameLen;
             if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
             memcpy(pathBuf.data(), origPathData, origPathLen);
@@ -301,6 +341,7 @@ static bool evalTerm(const QueryNode& node,
         // Skip full-path matching when nameOnly is set
         // (transformSlashTerms uses this for name-component terms)
         if (node.nameOnly) return false;
+        if (const auto* e = dirCache ? dirCache->find(&node) : nullptr) return e->hit[pathIdx] != 0;
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
         memcpy(pathBuf.data(), pathData, pathLen);
@@ -350,10 +391,9 @@ static bool evalTerm(const QueryNode& node,
     case MatchMode::WHOLEWORD: {
         const auto& lower = node.textLower;
         // Check in lowercase name
-        std::string name(nameData, nameLen);
-        for (size_t i = 0; i + lower.size() <= name.size(); ++i) {
-            if (memcmp(name.data() + i, lower.data(), lower.size()) == 0) {
-                if (isWholeWordMatch(name.data(), name.size(), i, lower.size()))
+        for (size_t i = 0; i + lower.size() <= nameLen; ++i) {
+            if (memcmp(nameData + i, lower.data(), lower.size()) == 0) {
+                if (isWholeWordMatch(nameData, nameLen, i, lower.size()))
                     return true;
             }
         }
@@ -381,19 +421,20 @@ static bool evalNode(const QueryNode& node,
                      const char* origNameData, uint16_t origNameLen,
                      const char* origPathData, uint16_t origPathLen,
                      std::vector<char>& pathBuf,
-                     const RegexCache& regexCache) {
+                     const RegexCache& regexCache,
+                     const DirMatchCache* dirCache = nullptr, uint32_t pathIdx = 0) {
     switch (node.type) {
         case QueryNodeType::TERM:
             return evalTerm(node, nameData, nameLen, pathData, pathLen,
                             origNameData, origNameLen, origPathData, origPathLen,
-                            pathBuf, regexCache);
+                            pathBuf, regexCache, dirCache, pathIdx);
 
         case QueryNodeType::AND:
             for (auto& child : node.children) {
                 if (!evalNode(*child, recType, recSize, recModTime,
                               nameData, nameLen, pathData, pathLen,
                               origNameData, origNameLen, origPathData, origPathLen,
-                              pathBuf, regexCache))
+                              pathBuf, regexCache, dirCache, pathIdx))
                     return false;
             }
             return true;
@@ -403,7 +444,7 @@ static bool evalNode(const QueryNode& node,
                 if (evalNode(*child, recType, recSize, recModTime,
                              nameData, nameLen, pathData, pathLen,
                              origNameData, origNameLen, origPathData, origPathLen,
-                             pathBuf, regexCache))
+                             pathBuf, regexCache, dirCache, pathIdx))
                     return true;
             }
             return false;
@@ -413,13 +454,87 @@ static bool evalNode(const QueryNode& node,
             return !evalNode(*node.children[0], recType, recSize, recModTime,
                              nameData, nameLen, pathData, pathLen,
                              origNameData, origNameLen, origPathData, origPathLen,
-                             pathBuf, regexCache);
+                             pathBuf, regexCache, dirCache, pathIdx);
 
         case QueryNodeType::FILTER:
             return evalFilter(node, recType, recSize, recModTime,
-                              nameData, nameLen, pathData, pathLen, pathBuf);
+                              nameData, nameLen, pathData, pathLen, pathBuf,
+                              dirCache, pathIdx);
     }
     return false;
+}
+
+/// Collect AST nodes whose directory half can be cached (see DirMatchCache).
+static void collectDirCacheNodes(const QueryNode& node, std::vector<const QueryNode*>& out) {
+    if (node.type == QueryNodeType::TERM) {
+        if (node.mode == MatchMode::SUBSTRING && !node.nameOnly &&
+            node.text.find('/') == std::string::npos && !node.textLower.empty()) {
+            out.push_back(&node);
+        }
+    } else if (node.type == QueryNodeType::FILTER) {
+        const auto& fn = node.filterName;
+        if ((fn == "path" || fn == "nopath") && !node.filterArg.empty() &&
+            node.filterArg.find('/') == std::string::npos) {
+            out.push_back(&node);
+        } else if (fn == "__pathseg" && !node.pathSegments.empty()) {
+            out.push_back(&node);
+        }
+    }
+    for (const auto& child : node.children) collectDirCacheNodes(*child, out);
+}
+
+/// Evaluate cacheable nodes once per directory, in parallel.
+static DirMatchCache buildDirMatchCache(const QueryNode& root,
+                                        const StringPool& lowerPathPool,
+                                        const StringPool& pathPool) {
+    DirMatchCache cache;
+    std::vector<const QueryNode*> nodes;
+    collectDirCacheNodes(root, nodes);
+    if (nodes.empty()) return cache;
+
+    const uint32_t pathCount = lowerPathPool.entryCount();
+    for (const auto* n : nodes) {
+        DirMatchCache::Entry e{n, std::vector<uint8_t>(pathCount, 0), {}};
+        if (n->type == QueryNodeType::FILTER && n->filterName == "__pathseg") {
+            e.hitAlt.assign(pathCount, 0);
+        }
+        cache.entries.push_back(std::move(e));
+    }
+
+    auto* entries = cache.entries.data();
+    const size_t entryCount = cache.entries.size();
+    constexpr uint32_t kChunk = 8192;
+    const size_t chunks = (pathCount + kChunk - 1) / kChunk;
+    dispatch_apply(chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t c) {
+        uint32_t begin = static_cast<uint32_t>(c * kChunk);
+        uint32_t end = std::min(pathCount, begin + kChunk);
+        for (size_t k = 0; k < entryCount; k++) {
+            auto& e = entries[k];
+            const QueryNode& n = *e.node;
+            if (n.type == QueryNodeType::TERM) {
+                bool cs = n.caseSensitive;
+                const StringPool& pool = cs ? pathPool : lowerPathPool;
+                const std::string& t = cs ? n.text : n.textLower;
+                for (uint32_t pi = begin; pi < end; pi++) {
+                    e.hit[pi] = me::simdContains(pool.data(pi), pool.length(pi), t.data(), t.size());
+                }
+            } else if (n.filterName == "__pathseg") {
+                const int last = static_cast<int>(n.pathSegments.size()) - 1;
+                for (uint32_t pi = begin; pi < end; pi++) {
+                    std::string_view dir = lowerPathPool.view(pi);
+                    e.hit[pi] = SearchEngine::pathSegmentsMatchFrom(dir, n.pathSegments, last);
+                    e.hitAlt[pi] = SearchEngine::pathSegmentsMatchFrom(dir, n.pathSegments, last - 1);
+                }
+            } else { // path / nopath
+                const std::string& t = n.filterArg;
+                for (uint32_t pi = begin; pi < end; pi++) {
+                    e.hit[pi] = me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
+                                                 t.data(), t.size());
+                }
+            }
+        }
+    });
+    return cache;
 }
 
 /// Extract all TERM texts from the AST (for trigram pre-filtering).
@@ -914,6 +1029,15 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         auto* ptcPtr = perThreadCaches.data();
         const auto& sTerm = scoringTerm;
 
+        // Per-directory match cache: worthwhile once records clearly outnumber
+        // directories (always true for a real disk index).
+        DirMatchCache dirCacheStorage;
+        if (!pureFilter && totalSize >= dirCacheMinRecords_ &&
+            (dirCacheMinRecords_ == 0 || lowerPathPool_.entryCount() <= totalSize / 2)) {
+            dirCacheStorage = buildDirMatchCache(*ast, lowerPathPool_, pathPool_);
+        }
+        const DirMatchCache* dirCache = dirCacheStorage.entries.empty() ? nullptr : &dirCacheStorage;
+
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         dispatch_apply(numThreads, queue, ^(size_t t) {
             size_t start = t * chunkSize;
@@ -989,7 +1113,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                     if (!evalNode(*astPtr, typesPtr[idx], sizesPtr[idx],
                                   static_cast<time_t>(modTimesPtr[idx]),
                                   nd, nl, pd, pl, ond, onl, opd, opl,
-                                  localPathBuf, regCache)) continue;
+                                  localPathBuf, regCache, dirCache, pi)) continue;
 
                     uint8_t priority = 2;
                     if (!sTerm.empty()) {
