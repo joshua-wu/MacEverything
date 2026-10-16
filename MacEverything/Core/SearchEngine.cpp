@@ -618,8 +618,12 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     uint32_t cdLiveCount = static_cast<uint32_t>(cdTypes.size());
 
     // Build trigram index, path trigram index, extension index, and recent cache outside any lock
-    auto cdTrigramIndex = buildTrigramIndexFromData(cdTypes, cdNamePool);
-    auto cdPathTrigramIndex = buildPathTrigramIndexFromData(cdLowerPathPool);
+    decltype(nameTrigramIndex_) cdTrigramIndex;
+    decltype(pathTrigramIndex_) cdPathTrigramIndex;
+    if (trigramIndexEnabled_) {
+        cdTrigramIndex = buildTrigramIndexFromData(cdTypes, cdNamePool);
+        cdPathTrigramIndex = buildPathTrigramIndexFromData(cdLowerPathPool);
+    }
     auto cdPathIdxToRecords = buildPathIdxToRecordsFromData(cdTypes, cdPathIndices, cdPathPool.entryCount());
     auto cdExtensionIndex = buildExtensionIndexFromData(cdTypes, cdNamePool);
     auto cdRecentCache = buildRecentCacheFromData(cdTypes, cdModTimes, kRecentCacheSize);

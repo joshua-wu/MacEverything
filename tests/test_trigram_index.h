@@ -10,6 +10,7 @@ static void runTrigramIndexTests() {
     std::cout << "  --- Basic trigram search ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"document.pdf", "/home/user", 1, 100, 1000});
         records.push_back({"readme.md", "/home/user", 1, 200, 2000});
@@ -40,6 +41,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- Trigram index with mutations ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"alpha.txt", "/tmp", 1, 100, 1000});
         records.push_back({"beta.txt", "/tmp", 1, 200, 2000});
@@ -68,6 +70,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- Trigram index after compaction ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         for (int i = 0; i < 20; i++) {
             records.push_back({"trigram_test_" + std::to_string(i) + ".txt", "/data", 1, (uint64_t)i, (time_t)i});
@@ -95,6 +98,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- Short keyword fallback ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"ab.txt", "/tmp", 1, 100, 1000});
         records.push_back({"abc.txt", "/tmp", 1, 200, 2000});
@@ -114,6 +118,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- Glob pattern matching ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"hello.cpp", "/src", 1, 100, 1000});
         records.push_back({"hello.h", "/src", 1, 50, 2000});
@@ -139,6 +144,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- No-match via trigram ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"myfile.txt", "/tmp", 1, 100, 1000});
         engine.loadRecords(std::move(records));
@@ -151,6 +157,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- Trigram search performance ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         // Build 100k records with varied names
         for (uint32_t i = 0; i < 100000; i++) {
@@ -232,6 +239,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- Path-only match with trigram ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"main.cpp", "/usr/local/src", 1, 100, 1000});
         records.push_back({"readme.md", "/usr/local/docs", 1, 200, 2000});
@@ -251,6 +259,7 @@ static void runTrigramIndexTests() {
     std::cout << "\n  --- removeByPathPrefix with trigram ---\n";
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.push_back({"aaa.txt", "/prefix/sub", 1, 100, 1000});
         records.push_back({"bbb.txt", "/prefix/sub", 1, 200, 2000});
@@ -287,6 +296,7 @@ static void runTrigramIndexTests() {
 
         // Benchmark: remove one prefix (5000 records out of 50000)
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         engine.loadRecords(buildRecords());
         auto t0 = std::chrono::steady_clock::now();
         uint32_t removed = engine.removeByPathPrefix("/volume/prefix0");
@@ -320,6 +330,8 @@ static void runTrigramIndexTests() {
         const uint32_t commonCount = 3000; // 30% of total
 
         SearchEngine engine;
+
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.reserve(totalRecords);
 
@@ -367,6 +379,7 @@ static void runTrigramIndexTests() {
         // Build a dataset large enough that trigram pre-filter is meaningful
         const uint32_t totalRecords = 10000;
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.reserve(totalRecords);
 
@@ -457,6 +470,7 @@ static void runTrigramIndexTests() {
     {
         const uint32_t totalRecords = 10000;
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         records.reserve(totalRecords);
 

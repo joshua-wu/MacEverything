@@ -35,6 +35,7 @@ static void runTrigramCompetitionTests() {
     // ── 68.1 GLOB trigram: *.txt uses trigram, not linear-gcd ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         FileRecord r1; r1.name = "readme.txt"; r1.path = "/tmp"; r1.type = 1;
         FileRecord r2; r2.name = "notes.txt"; r2.path = "/tmp"; r2.type = 1;
@@ -56,6 +57,7 @@ static void runTrigramCompetitionTests() {
     // ── 68.2 GLOB trigram: *.cpp uses trigram with correct candidates ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         FileRecord r1; r1.name = "main.cpp"; r1.path = "/src"; r1.type = 1;
         FileRecord r2; r2.name = "util.cpp"; r2.path = "/src"; r2.type = 1;
@@ -76,6 +78,7 @@ static void runTrigramCompetitionTests() {
     // Uses "/raresegment/common" syntax which triggers transformSlashTerms → __pathseg
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         // "common" appears in many names → high name trigram candidates
         for (int i = 0; i < 100; i++) {
@@ -106,6 +109,7 @@ static void runTrigramCompetitionTests() {
     // ── 68.4 Pure name query unaffected: "main" still uses advanced-trigram ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         FileRecord r1; r1.name = "main.cpp"; r1.path = "/src"; r1.type = 1;
         FileRecord r2; r2.name = "main.h"; r2.path = "/src"; r2.type = 1;
@@ -124,6 +128,7 @@ static void runTrigramCompetitionTests() {
     // ── 68.5 Short glob literal: *a* has literal "a" (1 char < 3), falls to linear ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         FileRecord r1; r1.name = "abc.txt"; r1.path = "/tmp"; r1.type = 1;
         FileRecord r2; r2.name = "xyz.txt"; r2.path = "/tmp"; r2.type = 1;
@@ -141,6 +146,7 @@ static void runTrigramCompetitionTests() {
     // ── 68.6 GLOB with long literal: test*.swift uses "test" or "swift" for trigram ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         FileRecord r1; r1.name = "test_main.swift"; r1.path = "/src"; r1.type = 1;
         FileRecord r2; r2.name = "test_util.swift"; r2.path = "/src"; r2.type = 1;
@@ -161,6 +167,7 @@ static void runTrigramCompetitionTests() {
     // With totalSize/10 (10%), it should pass and use trigram.
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         // Create 1000 records, 50 (5%) contain "test" in name
         for (int i = 0; i < 50; i++) {
@@ -183,6 +190,7 @@ static void runTrigramCompetitionTests() {
     // ── 69.8 Threshold boundary: >10% candidates falls to linear ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         // Create 100 records, 15 (15%) contain "test" — exceeds totalSize/10
         for (int i = 0; i < 15; i++) {
@@ -205,6 +213,7 @@ static void runTrigramCompetitionTests() {
     // ── 69.9 *.py glob with relaxed threshold uses trigram ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         for (int i = 0; i < 30; i++) {
             FileRecord r;
@@ -228,6 +237,7 @@ static void runTrigramCompetitionTests() {
     // but "application" matches few names. Name trigram should win without path expansion.
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         // 2 target records: name contains "application", path contains "library"
         FileRecord r1; r1.name = "Application Support"; r1.path = "/Library"; r1.type = 2;
@@ -257,6 +267,7 @@ static void runTrigramCompetitionTests() {
     // ── 69.11 Path trigram still wins when it has fewer path indices than name candidates ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         // "common" appears in many names (high name trigram candidates)
         for (int i = 0; i < 80; i++) {
@@ -285,6 +296,7 @@ static void runTrigramCompetitionTests() {
     // ── 69.12 Timing is captured for path trigram stage ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         std::vector<FileRecord> records;
         FileRecord r1; r1.name = "app.txt"; r1.path = "/rareseg"; r1.type = 1;
         records.push_back(std::move(r1));

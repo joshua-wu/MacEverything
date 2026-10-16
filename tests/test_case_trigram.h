@@ -40,6 +40,7 @@ static void runCaseTrigramTests() {
     // ── Test 3: Engine level — case: query uses trigram path ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         // Insert 500 records to make trigram pre-filtering meaningful
         for (int i = 0; i < 500; i++) {
             FileRecord r;
@@ -87,6 +88,7 @@ static void runCaseTrigramTests() {
     // ── Test 4: case: correctness — only exact case matches ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         for (int i = 0; i < 200; i++) {
             FileRecord r;
             r.name = "padding_" + std::to_string(i) + ".log";
@@ -123,6 +125,7 @@ static void runCaseTrigramTests() {
     // ── Test 5: case: short keyword (< 3 chars) falls back to linear ──
     {
         SearchEngine engine;
+        engine.setTrigramIndexEnabled(true);
         for (int i = 0; i < 50; i++) {
             FileRecord r;
             r.name = "file_" + std::to_string(i) + ".AB";

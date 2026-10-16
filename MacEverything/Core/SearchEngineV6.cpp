@@ -55,7 +55,7 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
 void SearchEngine::completePhase2() {
     if (!phase2Pending_.load(std::memory_order_acquire)) return;
 
-    LOG_INFO("SearchEngine", "Phase 2: building trigram indices in background...");
+    LOG_INFO("SearchEngine", "Phase 2: building secondary indices in background...");
 
     // Snapshot data needed for building indices (under shared lock)
     // Only snapshot types_ (lightweight ~5MB for 5.5M records) instead of
@@ -72,15 +72,19 @@ void SearchEngine::completePhase2() {
         snapTypes = types_;
         snapModTimes = modTimes_;
         snapNamePool = namePool_;
-        snapLowerPathPool = lowerPathPool_;
+        if (trigramIndexEnabled_) snapLowerPathPool = lowerPathPool_;
         snapPathIndices = pathIndices_;
         snapPathPoolSize = pathPool_.entryCount();
         snapSize = static_cast<uint32_t>(types_.size());
     }
 
     // Build all indices without holding any lock (~3s)
-    auto trigramIndex = buildTrigramIndexFromData(snapTypes, snapNamePool);
-    auto pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
+    decltype(nameTrigramIndex_) trigramIndex;
+    decltype(pathTrigramIndex_) pathTrigramIndex;
+    if (trigramIndexEnabled_) {
+        trigramIndex = buildTrigramIndexFromData(snapTypes, snapNamePool);
+        pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
+    }
     auto pathIdxToRecords = buildPathIdxToRecordsFromData(snapTypes, snapPathIndices, snapPathPoolSize);
     auto recentCache = buildRecentCacheFromData(snapTypes, snapModTimes, kRecentCacheSize);
     auto extensionIndex = buildExtensionIndexFromData(snapTypes, snapNamePool);
@@ -124,7 +128,7 @@ void SearchEngine::completePhase2() {
         phase2Pending_.store(false, std::memory_order_release);
 
         LOG_INFO("SearchEngine", "Phase 2 complete: replayed " << replayCount
-                 << " mutations, trigram indices active");
+                 << " mutations, secondary indices active");
     }
 }
 

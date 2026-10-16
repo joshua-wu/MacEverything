@@ -145,10 +145,12 @@ SearchEngine::buildTrigramIndexFromData(const std::vector<uint8_t>& types,
 }
 
 void SearchEngine::buildTrigramIndex() {
+    if (!trigramIndexEnabled_) { nameTrigramIndex_.clear(); return; }
     nameTrigramIndex_ = buildTrigramIndexFromData(types_, namePool_);
 }
 
 void SearchEngine::addTrigramsForRecord(uint32_t idx, const char* data, uint16_t len) {
+    if (!trigramIndexEnabled_) return;
     auto trigrams = ContentIndex::extractTrigrams(std::string(data, len));
     // P-2 fix: sort+unique instead of unordered_set
     std::sort(trigrams.begin(), trigrams.end());
@@ -166,7 +168,7 @@ void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
 }
 
 void SearchEngine::removeTrigramsForName(uint32_t idx, std::string_view lowerName) {
-    if (lowerName.empty()) return;
+    if (!trigramIndexEnabled_ || lowerName.empty()) return;
     auto trigrams = ContentIndex::extractTrigrams(std::string(lowerName));
     std::sort(trigrams.begin(), trigrams.end());
     trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
@@ -293,6 +295,7 @@ SearchEngine::buildPathIdxToRecordsFromData(const std::vector<uint8_t>& types,
 }
 
 void SearchEngine::buildPathTrigramIndex() {
+    if (!trigramIndexEnabled_) { pathTrigramIndex_.clear(); return; }
     pathTrigramIndex_ = buildPathTrigramIndexFromData(lowerPathPool_);
 }
 
@@ -322,6 +325,7 @@ void SearchEngine::removePathTrigramsForRecord(uint32_t idx) {
 }
 
 void SearchEngine::ensurePathTrigramsForPathIdx(uint32_t pathIdx) {
+    if (!trigramIndexEnabled_) return;
     // Check if this pathIdx already has entries in pathTrigramIndex_
     std::string lowerPath = lowerPathPool_.str(pathIdx);
     auto trigrams = ContentIndex::extractTrigrams(lowerPath);

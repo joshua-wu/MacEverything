@@ -132,6 +132,13 @@ public:
     /// then swap under lock and replay mutations that occurred during build.
     void completePhase2();
 
+    /// Trigram indices trade ~13 bytes per record (plus path postings) for
+    /// faster substring candidate lookup. Disabled by default: a parallel scan
+    /// of the name pool plus per-directory match caches is fast enough and
+    /// keeps memory close to the raw data size. Set before loading records.
+    void setTrigramIndexEnabled(bool enabled) { trigramIndexEnabled_ = enabled; }
+    bool trigramIndexEnabled() const { return trigramIndexEnabled_; }
+
     /// Whether Phase 2 is pending (trigram indices not yet built).
     bool isPhase2Pending() const { return phase2Pending_.load(std::memory_order_acquire); }
 
@@ -530,6 +537,7 @@ private:
 
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};
+    bool trigramIndexEnabled_ = false;
 
     // Phase 2 two-stage startup: trigram indices built in background
     std::atomic<bool> phase2Pending_{false};

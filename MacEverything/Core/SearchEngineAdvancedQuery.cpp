@@ -649,7 +649,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     }
 
     // Diagnostic: log why trigram Stage 1 was skipped or failed (for 3+ char queries)
-    if (trigramKey.size() >= 3 && !nameOk) {
+    if (trigramIndexEnabled_ && trigramKey.size() >= 3 && !nameOk) {
         bool p2 = phase2Pending_.load(std::memory_order_acquire);
         bool idxEmpty = nameTrigramIndex_.empty();
         LOG_INFO("SearchEngine", "DIAG-TRIGRAM key=\"" << trigramKey
