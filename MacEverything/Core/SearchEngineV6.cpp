@@ -5,101 +5,50 @@
 #include <thread>
 
 // ---------------------------------------------------------------------------
-// v6 Flat SoA: loadRecordsV6, completePhase2, snapshotForV6
+// Flat storage: loadStorage, persistStorage, completePhase2
 // ---------------------------------------------------------------------------
 
-void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
-                                  StringPool&& namePool,
-                                  std::vector<uint32_t>&& pathIndices,
-                                  StringPool&& pathPool,
-                                  StringPool&& lowerPathPool,
-                                  std::vector<uint8_t>&& types,
-                                  std::vector<uint64_t>&& sizes,
-                                  std::vector<int64_t>&& modTimes,
-                                  std::vector<uint64_t>&& inodes,
-                                  std::vector<int32_t>&& devIds) {
-    std::unique_lock lock(mutex_);
+void SearchEngine::loadStorage(Storage&& st) {
+    WriteGuard lock(*this);
 
-    uint32_t n = origNamePool.entryCount();
+    uint32_t n = st.origNamePool.entryCount();
 
-    // Install SoA columns directly (zero-copy from v6 file)
-    origNamePool_ = std::move(origNamePool);
-    namePool_ = std::move(namePool);
-    pathIndices_ = std::move(pathIndices);
-    pathPool_ = std::move(pathPool);
-    lowerPathPool_ = std::move(lowerPathPool);
-    types_ = std::move(types);
-    sizes_ = std::move(sizes);
-    modTimes_ = std::move(modTimes);
-    inodes_ = std::move(inodes);
-    devIds_ = std::move(devIds);
+    origNamePool_ = std::move(st.origNamePool);
+    namePool_ = std::move(st.namePool);
+    pathIndices_ = std::move(st.pathIndices);
+    pathPool_ = std::move(st.pathPool);
+    lowerPathPool_ = std::move(st.lowerPathPool);
+    types_ = std::move(st.types);
+    sizes_ = std::move(st.sizes);
+    modTimes_ = std::move(st.modTimes);
+    inodes_ = std::move(st.inodes);
+    devIds_ = std::move(st.devIds);
 
-    // Rebuild pathLookup_ and lowerPathLookup_ from pathPool_ entries
-    pathLookup_.clear();
-    lowerPathLookup_.clear();
-    pathLookup_.reserve(pathPool_.entryCount());
-    lowerPathLookup_.reserve(pathPool_.entryCount());
-    for (uint32_t i = 0; i < pathPool_.entryCount(); i++) {
-        if (pathPool_.isLive(i)) {
-            pathLookup_[pathPool_.str(i)] = i;
-            lowerPathLookup_[lowerPathPool_.str(i)] = i;
-        }
+    uint32_t actualLive;
+    if (st.hasLookups) {
+        pathLookup_ = std::move(st.pathLookup);
+        lowerPathLookup_ = std::move(st.lowerPathLookup);
+        pathIndex_ = std::move(st.pathIndex);
+        actualLive = st.liveCount;
+    } else {
+        rebuildPathLookupsUnlocked();
+        actualLive = rebuildPathIndexUnlocked();
     }
-
-    // Build pathIndex_ (lowercase full path -> record index)
-    // Parallelize full-path construction using string_view to avoid allocations
-    unsigned numThreads = std::thread::hardware_concurrency();
-    if (numThreads < 1) numThreads = 1;
-    if (numThreads > 32) numThreads = 32;
-    size_t chunkSize = (n + numThreads - 1) / numThreads;
-    std::vector<std::string> loweredPaths(n);
-    {
-        std::vector<std::thread> pathThreads;
-        pathThreads.reserve(numThreads);
-        for (unsigned t = 0; t < numThreads; t++) {
-            size_t start = t * chunkSize;
-            size_t end = std::min(start + chunkSize, static_cast<size_t>(n));
-            if (start >= end) break;
-            pathThreads.emplace_back([this, &loweredPaths, start, end] {
-                for (size_t i = start; i < end; i++) {
-                    uint32_t idx = static_cast<uint32_t>(i);
-                    loweredPaths[i] = makeFullPath(lowerPathPool_.view(pathIndices_[idx]),
-                                                   namePool_.view(idx));
-                }
-            });
-        }
-        for (auto& th : pathThreads) th.join();
-    }
-
-    // Insert into pathIndex_ and merge tombstone dedup (last-wins overwrites)
-    pathIndex_.clear();
-    pathIndex_.reserve(n);
-    for (uint32_t i = 0; i < n; i++) {
-        if (types_[i] == 0) continue;
-        pathIndex_[std::move(loweredPaths[i])] = i;
-    }
-
-    // Tombstone orphaned duplicates: records not in pathIndex_ as winners
-    uint32_t actualLive = 0;
-    {
-        // Collect winner indices from pathIndex_ values
-        std::vector<bool> isWinner(n, false);
-        for (const auto& [_, idx] : pathIndex_) {
-            isWinner[idx] = true;
-        }
-        for (uint32_t i = 0; i < n; i++) {
-            if (types_[i] == 0) continue;
-            if (isWinner[i]) {
-                actualLive++;
-            } else {
-                tombstoneAt(i);
-            }
-        }
-    }
-
     liveCount_.store(actualLive, std::memory_order_relaxed);
 
-    // Phase 2: defer trigram index building to background
+    if (st.hasDirRecords) {
+        pathIdxToRecords_ = std::move(st.dirRecords);
+        dirRecordsBuilt_ = true;
+    } else {
+        pathIdxToRecords_ = {};
+        dirRecordsBuilt_ = false;
+    }
+    nameTrigramIndex_.clear();
+    pathTrigramIndex_.clear();
+    extensionIndex_.clear();
+    recentCache_.clear();
+
+    // Phase 2: defer secondary index building to background
     phase2Pending_.store(true, std::memory_order_release);
     phase2StartRecordCount_ = static_cast<uint32_t>(types_.size());
 
@@ -108,23 +57,82 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
     dirtyPages_.assign(pageCount, false);
     fullRewriteNeeded_.store(false, std::memory_order_relaxed);
 
-    LOG_INFO("SearchEngine", "loadRecordsV6: loaded " << n << " records (" << actualLive
-             << " live), Phase 2 pending");
+    LOG_INFO("SearchEngine", "loadStorage: loaded " << n << " records (" << actualLive
+             << " live, lookups " << (st.hasLookups ? "loaded" : "rebuilt")
+             << ", dir lists " << (st.hasDirRecords ? "loaded" : "deferred") << "), Phase 2 pending");
+}
+
+bool SearchEngine::persistStorage(const std::function<bool(const StorageView&)>& write,
+                                  const std::function<bool(Storage&)>& reload) {
+    std::lock_guard<std::mutex> gate(writeGate_);
+    {
+        std::shared_lock lock(mutex_);
+        StorageView view{origNamePool_, namePool_, pathIndices_, pathPool_, lowerPathPool_,
+                         types_, sizes_, modTimes_, inodes_, devIds_,
+                         pathLookup_, lowerPathLookup_, pathIndex_, pathIdxToRecords_,
+                         dirRecordsBuilt_, liveCount_.load(std::memory_order_relaxed)};
+        if (!write(view)) return false;
+    }
+
+    Storage fresh;
+    if (!reload || !reload(fresh)) {
+        LOG_ERROR("SearchEngine", "persistStorage: written copy could not be reloaded, keeping current storage");
+        return true;
+    }
+
+    std::unique_lock lock(mutex_);
+    if (!fresh.hasLookups || fresh.types.size() != types_.size() ||
+        fresh.pathPool.entryCount() != pathPool_.entryCount() ||
+        fresh.namePool.rawSize() != namePool_.rawSize()) {
+        LOG_ERROR("SearchEngine", "persistStorage: reloaded copy does not match, keeping current storage");
+        return true;
+    }
+    // Same contents, new backing: indices into the columns stay valid.
+    origNamePool_ = std::move(fresh.origNamePool);
+    namePool_ = std::move(fresh.namePool);
+    pathIndices_ = std::move(fresh.pathIndices);
+    pathPool_ = std::move(fresh.pathPool);
+    lowerPathPool_ = std::move(fresh.lowerPathPool);
+    types_ = std::move(fresh.types);
+    sizes_ = std::move(fresh.sizes);
+    modTimes_ = std::move(fresh.modTimes);
+    inodes_ = std::move(fresh.inodes);
+    devIds_ = std::move(fresh.devIds);
+    pathLookup_ = std::move(fresh.pathLookup);
+    lowerPathLookup_ = std::move(fresh.lowerPathLookup);
+    pathIndex_ = std::move(fresh.pathIndex);
+    if (fresh.hasDirRecords) {
+        pathIdxToRecords_ = std::move(fresh.dirRecords);
+        dirRecordsBuilt_ = true;
+    }
+    return true;
 }
 
 void SearchEngine::completePhase2() {
     if (!phase2Pending_.load(std::memory_order_acquire)) return;
 
-    LOG_INFO("SearchEngine", "Phase 2: building trigram indices in background...");
+    if (!trigramIndexEnabled_) {
+        // Without trigram indices the remaining structures are cheap linear
+        // passes over the columns (tens of ms); build them in place instead of
+        // copying the columns for a lock-free build.
+        WriteGuard lock(*this);
+        if (!phase2Pending_.load(std::memory_order_acquire)) return;
+        if (!dirRecordsBuilt_) rebuildPathIdxToRecords();
+        buildExtensionIndex();
+        rebuildRecentCache();
+        phase2Pending_.store(false, std::memory_order_release);
+        LOG_INFO("SearchEngine", "Phase 2 complete: secondary indices active");
+        return;
+    }
+
+    LOG_INFO("SearchEngine", "Phase 2: building secondary indices in background...");
 
     // Snapshot data needed for building indices (under shared lock)
-    // Only snapshot types_ (lightweight ~5MB for 5.5M records) instead of
-    // the full SoA data (~440MB if using FileRecord structs).
-    std::vector<uint8_t> snapTypes;
-    std::vector<int64_t> snapModTimes;
+    Column<uint8_t> snapTypes;
+    Column<int64_t> snapModTimes;
     StringPool snapNamePool;
     StringPool snapLowerPathPool;
-    std::vector<uint32_t> snapPathIndices;
+    Column<uint32_t> snapPathIndices;
     uint32_t snapPathPoolSize;
     uint32_t snapSize;
     {
@@ -143,64 +151,49 @@ void SearchEngine::completePhase2() {
     auto pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
     auto pathIdxToRecords = buildPathIdxToRecordsFromData(snapTypes, snapPathIndices, snapPathPoolSize);
     auto recentCache = buildRecentCacheFromData(snapTypes, snapModTimes, kRecentCacheSize);
-    auto extensionIndex = buildExtensionIndexFromData(snapTypes, snapNamePool);
+    decltype(extensionIndex_) extensionIndex;
+    if (extensionIndexEnabled_) extensionIndex = buildExtensionIndexFromData(snapTypes, snapNamePool);
 
     LOG_INFO("SearchEngine", "Phase 2: indices built, swapping under lock...");
 
     // Swap under unique lock and replay mutations that occurred during build
     {
-        std::unique_lock lock(mutex_);
+        WriteGuard lock(*this);
 
         nameTrigramIndex_ = std::move(trigramIndex);
         pathTrigramIndex_ = std::move(pathTrigramIndex);
         pathIdxToRecords_ = std::move(pathIdxToRecords);
+        dirRecordsBuilt_ = true;
         recentCache_ = std::move(recentCache);
         extensionIndex_ = std::move(extensionIndex);
 
+        // Replay tombstones: records live in the snapshot but deleted during build.
+        // namePool_[i] is already tombstoned, so use the snapshot name.
+        uint32_t replayCount = 0;
+        for (uint32_t i = 0; i < snapSize && i < types_.size(); i++) {
+            if (snapTypes[i] != 0 && types_[i] == 0) {
+                removeTrigramsForName(i, snapNamePool.view(i));
+                removeExtensionForName(i, snapNamePool.view(i));
+                pathIdxToRecords_.eraseSorted(snapPathIndices[i], i);
+                replayCount++;
+            }
+        }
+
         // Replay records added during Phase 2 build
         uint32_t currentSize = static_cast<uint32_t>(types_.size());
-        uint32_t replayCount = 0;
         for (uint32_t i = snapSize; i < currentSize; i++) {
             if (types_[i] == 0) continue;
-            // Add trigrams for this record
             addTrigramsForRecord(i, namePool_.data(i), namePool_.length(i));
             addPathTrigramsForRecord(i);
             addExtensionForRecord(i);
-            addToRecentCache(i, static_cast<time_t>(modTimes_[i]));
             replayCount++;
         }
-
-        // Replay tombstones: records that were live in snapshot but deleted during build
-        for (uint32_t i = 0; i < snapSize; i++) {
-            if (i >= types_.size()) break;
-            if (snapTypes[i] != 0 && types_[i] == 0) {
-                // Was live in snapshot, now tombstoned — trigram was built, need to remove
-                // The trigram entry points at index i which is now tombstoned.
-                // Query-time type==0 check will filter it, but we can clean up explicitly.
-                removeTrigramsForRecord(i);  // Safe: namePool_[i] is tombstoned, this is a no-op
-            }
-        }
+        // In-place metadata updates during the build may have changed mod times.
+        rebuildRecentCache();
 
         phase2Pending_.store(false, std::memory_order_release);
 
         LOG_INFO("SearchEngine", "Phase 2 complete: replayed " << replayCount
-                 << " mutations, trigram indices active");
+                 << " mutations, secondary indices active");
     }
-}
-
-SearchEngine::V6Snapshot SearchEngine::snapshotForV6() const {
-    std::shared_lock lock(mutex_);
-    V6Snapshot snap;
-    snap.origNamePool = origNamePool_;
-    snap.namePool = namePool_;
-    snap.pathIndices = pathIndices_;
-    snap.pathPool = pathPool_;
-    snap.lowerPathPool = lowerPathPool_;
-    snap.types = types_;
-    snap.sizes = sizes_;
-    snap.modTimes = modTimes_;
-    snap.inodes = inodes_;
-    snap.devIds = devIds_;
-    snap.liveCount = liveCount_.load(std::memory_order_relaxed);
-    return snap;
 }

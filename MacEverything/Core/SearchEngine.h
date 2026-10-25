@@ -3,6 +3,10 @@
 #include "ContentIndex.h" // for Trigram type and extractTrigrams/makeTrigram
 #include "StringPool.h"
 #include "SIMDSearch.h"
+#include "FlatKeyIndex.h"
+#include "DirPostings.h"
+#include "Column.h"
+#include <functional>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -114,41 +118,79 @@ public:
                        StringPool&& pathDict,
                        StringPool&& lowerPathDict);
 
-    /// v6 fast-path load: accepts pre-separated SoA columns and StringPools.
-    /// Only builds pathIndex_ (required for mutations). Trigram indices deferred to Phase 2.
-    void loadRecordsV6(StringPool&& origNamePool,
-                       StringPool&& namePool,
-                       std::vector<uint32_t>&& pathIndices,
-                       StringPool&& pathPool,
-                       StringPool&& lowerPathPool,
-                       std::vector<uint8_t>&& types,
-                       std::vector<uint64_t>&& sizes,
-                       std::vector<int64_t>&& modTimes,
-                       std::vector<uint64_t>&& inodes,
-                       std::vector<int32_t>&& devIds);
+    /// All per-record storage, in the shape it is persisted in the flat index
+    /// file. Lookup tables and directory lists are optional: when absent they
+    /// are rebuilt from the columns.
+    struct Storage {
+        StringPool origNamePool;   // original-case names
+        StringPool namePool;       // lowercase names
+        Column<uint32_t> pathIndices;
+        StringPool pathPool;
+        StringPool lowerPathPool;
+        Column<uint8_t> types;
+        Column<uint64_t> sizes;
+        Column<int64_t> modTimes;
+        Column<uint64_t> inodes;
+        Column<int32_t> devIds;
+        FlatKeyIndex pathLookup;
+        FlatKeyIndex lowerPathLookup;
+        FlatKeyIndex pathIndex;
+        DirPostings dirRecords;
+        bool hasLookups = false;     // pathLookup/lowerPathLookup/pathIndex valid
+        bool hasDirRecords = false;  // dirRecords valid
+        uint32_t liveCount = 0;      // required with hasLookups
+    };
+
+    /// Read-only view of the engine's storage, for writing it out.
+    struct StorageView {
+        const StringPool& origNamePool;
+        const StringPool& namePool;
+        const Column<uint32_t>& pathIndices;
+        const StringPool& pathPool;
+        const StringPool& lowerPathPool;
+        const Column<uint8_t>& types;
+        const Column<uint64_t>& sizes;
+        const Column<int64_t>& modTimes;
+        const Column<uint64_t>& inodes;
+        const Column<int32_t>& devIds;
+        const FlatKeyIndex& pathLookup;
+        const FlatKeyIndex& lowerPathLookup;
+        const FlatKeyIndex& pathIndex;
+        const DirPostings& dirRecords;
+        bool dirRecordsComplete;     // false while Phase 2 is pending
+        uint32_t liveCount;
+    };
+
+    /// Install loaded storage (e.g. columns mapped from the flat index file).
+    /// Only builds what the storage lacks; the rest is deferred to Phase 2.
+    void loadStorage(Storage&& storage);
+
+    /// Write the storage out and switch to the copy that was written.
+    /// `write` runs under a shared lock with mutations held off; if it
+    /// succeeds, `reload` reads the written copy back (normally as private
+    /// file mappings) and it replaces the in-memory storage, which drops pages
+    /// dirtied or reallocated since the last load. Returns write's result.
+    bool persistStorage(const std::function<bool(const StorageView&)>& write,
+                        const std::function<bool(Storage&)>& reload);
 
     /// Complete Phase 2 of two-stage startup: build trigram indices in background,
     /// then swap under lock and replay mutations that occurred during build.
     void completePhase2();
 
+    /// Trigram indices trade ~13 bytes per record (plus path postings) for
+    /// faster substring candidate lookup. Disabled by default: a parallel scan
+    /// of the name pool plus per-directory match caches is fast enough and
+    /// keeps memory close to the raw data size. Set before loading records.
+    void setTrigramIndexEnabled(bool enabled) { trigramIndexEnabled_ = enabled; }
+    bool trigramIndexEnabled() const { return trigramIndexEnabled_; }
+
+    /// The extension index speeds up ext: filters (~4 bytes per file). Disabled
+    /// by default: the linear scan evaluates ext: filters in a few ms.
+    void setExtensionIndexEnabled(bool enabled) { extensionIndexEnabled_ = enabled; }
+    bool extensionIndexEnabled() const { return extensionIndexEnabled_; }
+
     /// Whether Phase 2 is pending (trigram indices not yet built).
     bool isPhase2Pending() const { return phase2Pending_.load(std::memory_order_acquire); }
-
-    /// Snapshot data for v6 serialization (thread-safe).
-    struct V6Snapshot {
-        StringPool origNamePool;  // original-case names
-        StringPool namePool;      // lowercase names
-        std::vector<uint32_t> pathIndices;
-        StringPool pathPool;
-        StringPool lowerPathPool;
-        std::vector<uint8_t> types;
-        std::vector<uint64_t> sizes;
-        std::vector<int64_t> modTimes;
-        std::vector<uint64_t> inodes;
-        std::vector<int32_t> devIds;
-        uint32_t liveCount;
-    };
-    V6Snapshot snapshotForV6() const;
 
     /// Case-insensitive substring search. Returns indices into the records array.
     /// If maxResults > 0, stops early once enough matches are found.
@@ -249,6 +291,11 @@ public:
 
     /// Records per page for paged persistence
     static constexpr uint32_t kRecordsPerPage = 1024;
+
+    /// Linear scans build per-directory match caches from this many records up.
+    static constexpr size_t kDirCacheMinRecords = 20000;
+    /// Test hook: override the record threshold for per-directory caches.
+    void setDirCacheMinRecords(size_t n) { dirCacheMinRecords_ = n; }
 
     /// Get the list of dirty page numbers (pages modified since last clearDirtyPages). Thread-safe.
     std::vector<uint32_t> getDirtyPageNumbers() const;
@@ -372,31 +419,80 @@ public:
 private:
     StringPool origNamePool_;              // contiguous original-case filenames (for v6 persistence)
     StringPool namePool_;                  // contiguous lowercase filenames
-    std::vector<uint32_t> pathIndices_;    // per-record index into pathPool_
+    Column<uint32_t> pathIndices_;         // per-record index into pathPool_
     StringPool pathPool_;                  // contiguous directory paths (deduplicated)
     StringPool lowerPathPool_;             // parallel to pathPool_, stores pre-lowered paths
 
     // SoA columnar arrays — the canonical per-record storage
-    std::vector<uint8_t>  types_;          // 1=file, 2=directory, 0=tombstone
-    std::vector<uint64_t> sizes_;          // file size in bytes
-    std::vector<int64_t>  modTimes_;       // modification time (Unix epoch)
-    std::vector<uint64_t> inodes_;         // inode number
-    std::vector<int32_t>  devIds_;         // device ID
-    std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
-    std::unordered_map<std::string, uint32_t> lowerPathLookup_; // lowered path -> pathPool_ index
-    std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
+    Column<uint8_t>  types_;               // 1=file, 2=directory, 0=tombstone
+    Column<uint64_t> sizes_;               // file size in bytes
+    Column<int64_t>  modTimes_;            // modification time (Unix epoch)
+    Column<uint64_t> inodes_;              // inode number
+    Column<int32_t>  devIds_;              // device ID
+    // Key-less hash indices: keys are re-derived from the pools above (see FlatKeyIndex).
+    FlatKeyIndex pathLookup_;      // path string -> pathPool_ index
+    FlatKeyIndex lowerPathLookup_; // lowered path -> pathPool_ index
+    FlatKeyIndex pathIndex_;       // lowercase fullPath -> live record index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
+    // Taken before mutex_ by every mutation, so persistStorage can write under
+    // a shared lock and then swap storage without mutations in between.
+    mutable std::mutex writeGate_;
+    struct WriteGuard {
+        std::lock_guard<std::mutex> gate;
+        std::unique_lock<std::shared_mutex> lock;
+        explicit WriteGuard(const SearchEngine& e) : gate(e.writeGate_), lock(e.mutex_) {}
+    };
 
     // Trigram inverted index for fast filename search
     std::unordered_map<Trigram, std::vector<uint32_t>> nameTrigramIndex_; // trigram -> record indices
 
     // Path trigram index: two-level lookup for fast path-only matching
     std::unordered_map<Trigram, std::vector<uint32_t>> pathTrigramIndex_; // trigram -> sorted pathIdx
-    std::vector<std::vector<uint32_t>> pathIdxToRecords_; // pathIdx -> sorted record indices
+    DirPostings pathIdxToRecords_; // pathIdx -> sorted record indices
+    bool dirRecordsBuilt_ = false; // pathIdxToRecords_ covers every record
 
     // Extension index: extension string -> sorted record indices (files only)
     std::unordered_map<std::string, std::vector<uint32_t>> extensionIndex_;
+
+    /// Key accessors for the FlatKeyIndex members.
+    static FlatKeyIndex::KeyParts recordKeyParts(std::string_view lowerDir, std::string_view lowerName) {
+        return {lowerDir, lowerName, !(lowerDir.empty() || lowerDir.back() == '/')};
+    }
+    auto recordKeyOf() const {
+        return [this](uint32_t i) {
+            return recordKeyParts(lowerPathPool_.view(pathIndices_[i]), namePool_.view(i));
+        };
+    }
+    static auto poolKeyOf(const StringPool& pool) {
+        return [&pool](uint32_t i) { return FlatKeyIndex::KeyParts{pool.view(i), {}, false}; };
+    }
+    /// Live record index for a lowercase full path, or UINT32_MAX.
+    uint32_t findRecordUnlocked(std::string_view lowerFull) const {
+        return pathIndex_.get(lowerFull, recordKeyOf());
+    }
+    /// Rebuild pathIndex_ from the live records; tombstones losing duplicates.
+    /// Returns the live count.
+    uint32_t rebuildPathIndexUnlocked();
+    /// Rebuild pathLookup_/lowerPathLookup_ from the path pools.
+    void rebuildPathLookupsUnlocked();
+
+    /// Remove a live record from every index and tombstone it.
+    void removeRecordUnlocked(uint32_t idx, bool writeWal);
+
+    /// Append a new live record and index it (no WAL write). Returns its index.
+    uint32_t appendRecordUnlocked(FileRecord&& rec);
+    /// Insert or update the record at fullPath (no WAL write). Updates of an
+    /// existing record with the same name and type are applied in place, so
+    /// content changes do not create tombstones.
+    void upsertUnlocked(const std::string& fullPath, FileRecord&& rec);
+    /// Remove idx from the name trigram / extension indices given its lowercase name.
+    void removeTrigramsForName(uint32_t idx, std::string_view lowerName);
+    void removeExtensionForName(uint32_t idx, std::string_view lowerName);
+
+    /// Indices of live records whose lowercase full path equals one of the
+    /// prefixes or lies beneath it.
+    std::vector<uint32_t> collectSubtreeUnlocked(const std::vector<std::string>& lowerPrefixes) const;
 
     /// Intern a directory path into pathPool_ and lowerPathPool_. Returns pathPool_ index.
     /// Deduplicates via pathLookup_. Must be called under unique_lock.
@@ -458,6 +554,11 @@ public:
     /// Check if a directory path matches the path segment constraints.
     static bool pathSegmentsMatch(std::string_view dirPath,
                                   const std::vector<PathSegment>& segments);
+    /// pathSegmentsMatch starting with segments[0..segIdx] still unmatched,
+    /// as if segments after segIdx were already matched further right.
+    static bool pathSegmentsMatchFrom(std::string_view dirPath,
+                                      const std::vector<PathSegment>& segments,
+                                      int segIdx);
 private:
 
     /// Estimate trigram candidate count for a keyword (min posting list size).
@@ -489,6 +590,9 @@ private:
 
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};
+    bool trigramIndexEnabled_ = false;
+    bool extensionIndexEnabled_ = false;
+    size_t dirCacheMinRecords_ = kDirCacheMinRecords;
 
     // Phase 2 two-stage startup: trigram indices built in background
     std::atomic<bool> phase2Pending_{false};
@@ -547,12 +651,12 @@ private:
 
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
-        buildTrigramIndexFromData(const std::vector<uint8_t>& types,
+        buildTrigramIndexFromData(const Column<uint8_t>& types,
                                   const StringPool& namePool);
 
     /// Build extension index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<std::string, std::vector<uint32_t>>
-        buildExtensionIndexFromData(const std::vector<uint8_t>& types,
+        buildExtensionIndexFromData(const Column<uint8_t>& types,
                                     const StringPool& namePool);
 
     /// Build path trigram index from pre-lowered StringPool (used by COW compaction)
@@ -560,14 +664,14 @@ private:
         buildPathTrigramIndexFromData(const StringPool& lowerPathPool);
 
     /// Build pathIdx -> record indices mapping from standalone data (used by COW compaction)
-    static std::vector<std::vector<uint32_t>>
-        buildPathIdxToRecordsFromData(const std::vector<uint8_t>& types,
-                                      const std::vector<uint32_t>& pathIndices,
+    static DirPostings
+        buildPathIdxToRecordsFromData(const Column<uint8_t>& types,
+                                      const Column<uint32_t>& pathIndices,
                                       uint32_t pathPoolSize);
 
     /// Build recent cache from standalone data (no member access, used by COW compaction)
     static std::set<RecentEntry>
-        buildRecentCacheFromData(const std::vector<uint8_t>& types,
-                                 const std::vector<int64_t>& modTimes,
+        buildRecentCacheFromData(const Column<uint8_t>& types,
+                                 const Column<int64_t>& modTimes,
                                  uint32_t cacheSize);
 };

@@ -48,15 +48,25 @@ class HotkeyManager {
             InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
                 let mainWindow = NSApp.windows.first { $0.title == "MacEverything" }
                 if NSApp.isActive, let window = mainWindow, window.isVisible {
-                    NSApp.hide(nil)
+                    window.orderOut(nil)
                 } else {
-                    NSApp.activate(ignoringOtherApps: true)
-                    if let window = mainWindow {
-                        window.makeKeyAndOrderFront(nil)
-                    }
+                    HotkeyManager.showMainWindow()
                 }
                 return noErr
             }, 1, &eventSpec, nil, &eventHandlerRef)
+        }
+    }
+
+    private static func showMainWindow(attemptsRemaining: Int = 50) {
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.title == "MacEverything" }) {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        } else if attemptsRemaining > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                showMainWindow(attemptsRemaining: attemptsRemaining - 1)
+            }
         }
     }
 

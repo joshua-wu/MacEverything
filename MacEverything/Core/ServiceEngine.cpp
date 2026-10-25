@@ -282,6 +282,9 @@ void ServiceEngine::backgroundSyncEngine(
 
         auto watcherForReplay = std::make_unique<FileSystemWatcher>("replay");
         auto* watcherPtr = watcherForReplay.get();
+        // Same exclusions as the live watcher, so replay does not re-ingest
+        // churn from cache/log directories the live watcher ignores.
+        watcherPtr->setExclusionPaths(fsEventExclusions());
 
         dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 

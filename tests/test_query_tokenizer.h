@@ -149,5 +149,38 @@ static void runQueryTokenizerTests() {
         check(tokens[0].value == "unclosed", "54.15 value captured");
     }
 
+    // 54.16 Pasted absolute path with spaces stays a single token
+    {
+        const std::string path =
+            "/Users/test/Documents/New project/xiaohongshu/design.md";
+        auto tokens = QueryTokenizer::tokenize(path);
+        check(tokens.size() == 2, "54.16 absolute path token count");
+        check(tokens[0].type == TokenType::WORD, "54.16 absolute path is WORD");
+        check(tokens[0].value == path, "54.16 spaces preserved inside path");
+    }
+
+    // 54.17 Codex/editor line and column suffixes are removed
+    {
+        auto tokens = QueryTokenizer::tokenize(
+            "/Users/test/New project/file.swift:42:7");
+        check(tokens.size() == 2, "54.17 location path token count");
+        check(tokens[0].value == "/Users/test/New project/file.swift",
+              "54.17 line and column suffix removed");
+
+        tokens = QueryTokenizer::tokenize("/Users/test/New project/file.md:1");
+        check(tokens[0].value == "/Users/test/New project/file.md",
+              "54.17 line-only suffix removed");
+    }
+
+    // 54.18 Explicit filters after a path retain normal query semantics
+    {
+        auto tokens = QueryTokenizer::tokenize("/tmp/file ext:md");
+        check(tokens.size() == 3, "54.18 path plus filter token count");
+        check(tokens[0].type == TokenType::WORD && tokens[0].value == "/tmp/file",
+              "54.18 path token preserved");
+        check(tokens[1].type == TokenType::FILTER && tokens[1].filterName == "ext",
+              "54.18 filter remains separate");
+    }
+
     std::cout << "  Passed: " << localPassed << "  Failed: " << localFailed << "\n\n";
 }

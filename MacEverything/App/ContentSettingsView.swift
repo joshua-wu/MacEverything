@@ -13,14 +13,14 @@ struct ContentSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Content Indexing") {
+            Section("内容索引") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Indexed Files: \(indexedCount)")
+                    Text("已索引文件：\(indexedCount)")
                         .font(.headline)
 
                     Divider()
 
-                    Text("Max File Size")
+                    Text("最大文件大小")
                         .font(.subheadline)
                     HStack {
                         Slider(value: $maxFileSizeMB, in: 0.1...10.0, step: 0.1)
@@ -30,7 +30,7 @@ struct ContentSettingsView: View {
 
                     Divider()
 
-                    Text("File Extensions")
+                    Text("文件扩展名")
                         .font(.subheadline)
 
                     ScrollView {
@@ -56,17 +56,17 @@ struct ContentSettingsView: View {
                     .frame(maxHeight: 120)
 
                     HStack {
-                        TextField("Add extension...", text: $newExtension)
+                        TextField("添加扩展名…", text: $newExtension)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { addExtension() }
-                        Button("Add") { addExtension() }
+                        Button("添加") { addExtension() }
                             .disabled(newExtension.isEmpty)
                     }
                 }
             }
 
             Section {
-                Button("Apply") {
+                Button("应用") {
                     applySettings()
                 }
             }

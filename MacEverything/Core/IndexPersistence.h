@@ -34,7 +34,7 @@ public:
     void attachWAL();
 
     /// Minimum WAL entry count before flush proceeds (unless forced).
-    static constexpr uint64_t kCompactThreshold = 100;
+    static constexpr uint64_t kCompactThreshold = 50000;
 
     /// Incremental flush: write only dirty pages, swap WAL.
     void flush(uint64_t lastEventId, bool force = false);

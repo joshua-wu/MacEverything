@@ -13,42 +13,36 @@
 // ---------------------------------------------------------------------------
 bool SearchEngine::pathSegmentsMatch(std::string_view dirPath,
                                      const std::vector<PathSegment>& segments) {
-    if (segments.empty()) return true;
+    return pathSegmentsMatchFrom(dirPath, segments, static_cast<int>(segments.size()) - 1);
+}
 
-    // Split dirPath into components by '/'
-    // dirPath comes from lowerPathPool_ which is already lowercase — no lowering needed
-    std::vector<std::string_view> components;
-    size_t start = 0;
-    for (size_t i = 0; i <= dirPath.size(); i++) {
-        if (i == dirPath.size() || dirPath[i] == '/') {
-            if (i > start) {
-                components.push_back(dirPath.substr(start, i - start));
-            }
-            start = i + 1;
-        }
-    }
+bool SearchEngine::pathSegmentsMatchFrom(std::string_view dirPath,
+                                         const std::vector<PathSegment>& segments,
+                                         int segIdx) {
+    if (segIdx < 0) return true;
+    const int lastSeg = static_cast<int>(segments.size()) - 1;
 
-    // Match segments right-to-left against path components
-    int segIdx = static_cast<int>(segments.size()) - 1;
-    int compIdx = static_cast<int>(components.size()) - 1;
+    // Walk '/'-separated components right-to-left without allocating.
+    // dirPath comes from lowerPathPool_ which is already lowercase.
+    size_t end = dirPath.size();
+    while (segIdx >= 0) {
+        while (end > 0 && dirPath[end - 1] == '/') end--;
+        if (end == 0) break; // no components left
+        size_t start = dirPath.rfind('/', end - 1);
+        start = (start == std::string_view::npos) ? 0 : start + 1;
+        std::string_view component = dirPath.substr(start, end - start);
+        end = start;
 
-    while (segIdx >= 0 && compIdx >= 0) {
-        // Input is already lowercase — direct string_view find
-        if (components[compIdx].find(segments[segIdx].text) != std::string_view::npos) {
+        if (component.find(segments[segIdx].text) != std::string_view::npos) {
             segIdx--;
-            compIdx--;
+        } else if (segIdx < lastSeg && !segments[segIdx + 1].adjacentToNext) {
+            // gap allowed before the already-matched segment: skip component
+        } else if (segIdx == lastSeg) {
+            // last segment may float: skip trailing components
         } else {
-            if (segIdx < static_cast<int>(segments.size()) - 1 &&
-                segments[segIdx + 1].adjacentToNext == false) {
-                compIdx--;
-            } else if (segIdx == static_cast<int>(segments.size()) - 1) {
-                compIdx--;
-            } else {
-                return false;
-            }
+            return false;
         }
     }
-
     return segIdx < 0;
 }
 
@@ -84,10 +78,8 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
     fullDirPath += std::string(namePool_.data(dirIdx), namePool_.length(dirIdx));
 
     // Look up children of this directory
-    auto it = lowerPathLookup_.find(fullDirPath);
-    if (it == lowerPathLookup_.end()) return;
-
-    uint32_t childPathIdx = it->second;
+    uint32_t childPathIdx = lowerPathLookup_.get(fullDirPath, poolKeyOf(lowerPathPool_));
+    if (childPathIdx == UINT32_MAX) return;
     if (childPathIdx >= pathIdxToRecords_.size()) return;
     const auto& childRecords = pathIdxToRecords_[childPathIdx];
 

@@ -16,10 +16,10 @@ struct PermissionView: View {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundColor(.yellow)
-                Text("Full Disk Access is required to scan all files.")
+                Text("需要开启完全磁盘访问权限，才能扫描所有文件。")
                     .font(.caption)
                 Spacer()
-                Button("Open Settings") {
+                Button("打开设置") {
                     openPrivacySettings()
                 }
                 .font(.caption)

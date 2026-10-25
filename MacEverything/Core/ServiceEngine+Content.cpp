@@ -99,16 +99,14 @@ void ServiceEngine::startContentIndexing() {
                          << fileEntries->size() << " previously-indexed files to check");
             } else {
                 // Full scan: first run, no persisted content index
+                // Only files with a configured extension: building a full
+                // path for every record would allocate hundreds of MB.
                 uint32_t total = engine->recordCount();
-                std::vector<uint32_t> allIndices;
-                allIndices.reserve(total);
-                for (uint32_t i = 0; i < total; i++) allIndices.push_back(i);
-
-                fileEntries->reserve(total);
-                engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
-                    if (r.type != 1) return;
+                engine->forEachRecordInRange(0, total, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
+                    if (r.type != 1 || !contentIndex->hasAllowedExtension(r.name)) return;
                     fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name), r.modTime});
                 });
+                fileEntries->shrink_to_fit();
                 LOG_INFO("ServiceEngine", "Content indexing: full scan mode, "
                          << fileEntries->size() << " regular files to index");
             }

@@ -24,24 +24,24 @@ struct MacEverythingApp: App {
             }
 
             CommandGroup(replacing: .help) {
-                Button("Search Syntax Help") {
+                Button("搜索语法帮助") {
                     SearchSyntaxHelpWindowController.shared.showWindow()
                 }
                 .keyboardShortcut("/", modifiers: [.command, .shift])
             }
 
             CommandGroup(after: .appSettings) {
-                Button("Rebuild Index") {
+                Button("重建索引") {
                     NotificationCenter.default.post(name: .rebuildIndex, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
-                Button("Shortcut Settings...") {
+                Button("快捷键设置…") {
                     ShortcutSettingsWindowController.shared.showWindow()
                 }
                 .keyboardShortcut(",", modifiers: [.command])
 
-                Button("Content Settings...") {
+                Button("内容设置…") {
                     ContentSettingsWindowController.shared.showWindow()
                 }
 
@@ -77,7 +77,7 @@ class ContentSettingsWindowController {
         let settingsView = ContentSettingsView()
         let hostingController = NSHostingController(rootView: settingsView)
         let win = NSWindow(contentViewController: hostingController)
-        win.title = "Content Settings"
+        win.title = "内容设置"
         win.styleMask = [.titled, .closable]
         win.center()
         win.makeKeyAndOrderFront(nil)
@@ -98,7 +98,7 @@ class ShortcutSettingsWindowController {
         let settingsView = ShortcutSettingsView()
         let hostingController = NSHostingController(rootView: settingsView)
         let win = NSWindow(contentViewController: hostingController)
-        win.title = "Shortcut Settings"
+        win.title = "快捷键设置"
         win.styleMask = [.titled, .closable]
         win.center()
         win.makeKeyAndOrderFront(nil)
@@ -119,7 +119,7 @@ class SearchSyntaxHelpWindowController {
         let helpView = SearchSyntaxHelpView()
         let hostingController = NSHostingController(rootView: helpView)
         let win = NSWindow(contentViewController: hostingController)
-        win.title = "Search Syntax Help"
+        win.title = "搜索语法帮助"
         win.styleMask = [.titled, .closable, .resizable]
         win.setContentSize(NSSize(width: 580, height: 720))
         win.minSize = NSSize(width: 450, height: 400)

@@ -11,9 +11,9 @@
 #if defined(__aarch64__) && defined(__APPLE__)
 #include <arm_acle.h>
 
-uint32_t IndexWAL::crc32(const void* data, size_t len) {
+uint32_t IndexWAL::crc32Update(uint32_t prev, const void* data, size_t len) {
     auto* p = static_cast<const uint8_t*>(data);
-    uint32_t crc = 0xFFFFFFFF;
+    uint32_t crc = ~prev;
 
     // Process 8 bytes at a time using hardware CRC32 (ISO polynomial)
     while (len >= 8) {
@@ -64,10 +64,10 @@ static const uint32_t (*getCRC32Tables())[256] {
     return tables;
 }
 
-uint32_t IndexWAL::crc32(const void* data, size_t len) {
+uint32_t IndexWAL::crc32Update(uint32_t prev, const void* data, size_t len) {
     auto tables = getCRC32Tables();
     auto* p = static_cast<const uint8_t*>(data);
-    uint32_t crc = 0xFFFFFFFF;
+    uint32_t crc = ~prev;
 
     // Process 4 bytes at a time
     while (len >= 4) {

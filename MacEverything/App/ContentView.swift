@@ -65,23 +65,23 @@ struct ContentView: View {
                 if viewModel.isScanning {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Scanning... \(viewModel.scannedCount) items scanned")
+                    Text("正在扫描…已扫描 \(viewModel.scannedCount) 项")
                         .foregroundColor(.secondary)
                 } else if viewModel.scanComplete {
                     if viewModel.isSyncing {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Syncing...")
+                        Text("同步中…")
                             .foregroundColor(.orange)
                     } else if viewModel.isMonitoring {
                         Circle()
                             .fill(.green)
                             .frame(width: 6, height: 6)
-                        Text("Live")
+                        Text("实时监听")
                             .foregroundColor(.green)
                             .fontWeight(.medium)
                     }
-                    Text("\(viewModel.totalRecords) files indexed")
+                    Text("已索引 \(viewModel.totalRecords) 个文件")
                         .foregroundColor(.secondary)
                         .accessibilityIdentifier("indexedCount")
                     if viewModel.isContentIndexing, let progress = viewModel.contentIndexProgress {
@@ -89,13 +89,13 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                         ProgressView()
                             .controlSize(.small)
-                        Text("Content indexing \(progress.indexed)/\(progress.total)")
+                        Text("内容索引 \(progress.indexed)/\(progress.total)")
                             .foregroundColor(.orange)
                     }
                     if viewModel.totalMatches > 0 {
                         Text("·")
                             .foregroundColor(.secondary)
-                        Text("\(viewModel.totalMatches) matches")
+                        Text("匹配 \(viewModel.totalMatches) 项")
                             .foregroundColor(.secondary)
                             .accessibilityIdentifier("matchCount")
                         Text("·")
@@ -120,7 +120,7 @@ struct ContentView: View {
                     Spacer()
                     ProgressView()
                         .controlSize(.large)
-                    Text("Indexing files... \(viewModel.scannedCount) items scanned")
+                    Text("正在建立文件索引…已扫描 \(viewModel.scannedCount) 项")
                         .font(.callout)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -134,15 +134,15 @@ struct ContentView: View {
                             ProgressView()
                                 .controlSize(.large)
                                 .padding(.bottom, 4)
-                            Text("Content index is building...")
+                            Text("正在建立内容索引…")
                                 .font(.headline)
                                 .foregroundColor(.orange)
                             if let progress = viewModel.contentIndexProgress {
-                                Text("Indexed \(progress.indexed) / \(progress.total) files")
+                                Text("已索引 \(progress.indexed) / \(progress.total) 个文件")
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
                             }
-                            Text("Search results will appear after indexing completes")
+                            Text("索引完成后会显示搜索结果")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         } else {
@@ -150,10 +150,10 @@ struct ContentView: View {
                                 .font(.system(size: 36))
                                 .foregroundColor(.secondary.opacity(0.5))
                                 .padding(.bottom, 4)
-                            Text("No content matches found")
+                            Text("没有找到内容匹配")
                                 .foregroundColor(.secondary)
                             if viewModel.contentIndexedCount == 0 {
-                                Text("No files indexed. Configure extensions in Content Settings.")
+                                Text("还没有建立内容索引。请在内容设置里配置扩展名。")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -163,7 +163,7 @@ struct ContentView: View {
                 } else if viewModel.contentKeyword.isEmpty {
                     VStack {
                         Spacer()
-                        Text("Type a keyword after infile: to search file contents")
+                        Text("在 infile: 后输入关键词即可搜索文件内容")
                             .foregroundColor(.secondary)
                         Spacer()
                     }
@@ -183,7 +183,7 @@ struct ContentView: View {
                     if viewModel.totalMatches > 0 {
                         HStack {
                             Spacer()
-                            Text("\(viewModel.contentResults.count) content matches")
+                            Text("内容匹配 \(viewModel.contentResults.count) 项")
                                 .font(.callout)
                                 .foregroundColor(.secondary)
                                 .padding(8)
@@ -195,7 +195,7 @@ struct ContentView: View {
             } else if viewModel.displayItems.isEmpty && !viewModel.searchText.isEmpty && viewModel.scanComplete {
                 VStack {
                     Spacer()
-                    Text("No results found")
+                    Text("没有找到结果")
                         .foregroundColor(.secondary)
                         .accessibilityIdentifier("noResultsLabel")
                     Spacer()
@@ -207,7 +207,7 @@ struct ContentView: View {
                             HStack {
                                 HStack(spacing: 4) {
                                     Image(systemName: "clock")
-                                    Text("Recent Files")
+                                    Text("最近文件")
                                         .font(.callout)
                                         .fontWeight(.medium)
                                 }
@@ -234,7 +234,7 @@ struct ContentView: View {
                                 Spacer()
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("Loading more results...")
+                                Text("正在加载更多结果…")
                                     .font(.callout)
                                     .foregroundColor(.secondary)
                                 Spacer()
@@ -253,7 +253,7 @@ struct ContentView: View {
                 if viewModel.totalMatches > 0 {
                     HStack {
                         Spacer()
-                        Text("Showing \(viewModel.displayItems.count) of \(viewModel.totalMatches) results")
+                        Text("显示 \(viewModel.displayItems.count) / \(viewModel.totalMatches) 个结果")
                             .font(.callout)
                             .foregroundColor(.secondary)
                             .padding(8)

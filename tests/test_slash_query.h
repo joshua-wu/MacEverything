@@ -270,4 +270,34 @@ static void runSlashQueryTests() {
                   << "ms phase1=" << timing.phase1Ms
                   << "ms path=" << timing.searchPath << "\n";
     }
+
+    // -- Test 15: Pasted full paths with spaces and editor locations --
+    std::cout << "\n  --- Test 15: Pasted full path normalization ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"opendesign_prompt_spain_2026.md",
+                           "/Users/joshguo/Documents/New project/xiaohongshu",
+                           1, 100, 1000});
+        records.push_back({"opendesign_prompt_spain_2026.md",
+                           "/Users/joshguo/Documents/Archive/xiaohongshu",
+                           1, 200, 2000});
+        engine.loadRecords(std::move(records));
+
+        const std::string fullPath =
+            "/Users/joshguo/Documents/New project/xiaohongshu/"
+            "opendesign_prompt_spain_2026.md";
+
+        auto res = engine.query(fullPath);
+        check(res.size() == 1,
+              "Pasted absolute path with spaces matches the exact path");
+
+        res = engine.query(fullPath + ":1");
+        check(res.size() == 1,
+              "Pasted Codex path with line suffix matches the file");
+
+        res = engine.query(fullPath + ":42:7");
+        check(res.size() == 1,
+              "Pasted editor path with line and column matches the file");
+    }
 }

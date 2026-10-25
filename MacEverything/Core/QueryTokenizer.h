@@ -32,6 +32,17 @@ class QueryTokenizer {
 public:
     static std::vector<Token> tokenize(const std::string& input) {
         std::vector<Token> tokens;
+
+        // Treat a pasted absolute path as one token, even when directory names
+        // contain spaces. Also accept editor/Codex references such as
+        // /path/to/file.swift:42:7 by dropping the trailing line/column suffix.
+        std::string literalPath;
+        if (normalizeStandalonePathQuery(input, literalPath)) {
+            tokens.push_back({TokenType::WORD, std::move(literalPath)});
+            tokens.push_back({TokenType::END, ""});
+            return tokens;
+        }
+
         size_t i = 0;
         size_t len = input.size();
 
@@ -160,6 +171,97 @@ public:
     }
 
 private:
+    static bool normalizeStandalonePathQuery(const std::string& input,
+                                             std::string& normalized) {
+        size_t start = input.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) return false;
+        size_t end = input.find_last_not_of(" \t\r\n");
+        std::string path = input.substr(start, end - start + 1);
+
+        if (path.rfind("file://", 0) == 0) {
+            path.erase(0, 7);
+        }
+
+        if (path.empty() || (path[0] != '/' && path.rfind("~/", 0) != 0)) {
+            return false;
+        }
+
+        // Preserve existing glob and directory-list query semantics.
+        if (path.find('*') != std::string::npos ||
+            path.find('?') != std::string::npos) {
+            return false;
+        }
+
+        // Keep explicit advanced expressions such as "/tmp/file ext:md"
+        // on the normal tokenizer path instead of swallowing the filter.
+        if (hasExplicitAdvancedSuffix(path)) return false;
+
+        stripEditorLocationSuffix(path);
+        if (path.empty()) return false;
+
+        normalized = std::move(path);
+        return true;
+    }
+
+    static bool hasExplicitAdvancedSuffix(const std::string& path) {
+        size_t i = 0;
+        while (i < path.size()) {
+            if (!std::isspace(static_cast<unsigned char>(path[i]))) {
+                i++;
+                continue;
+            }
+
+            while (i < path.size() &&
+                   std::isspace(static_cast<unsigned char>(path[i]))) {
+                i++;
+            }
+            if (i >= path.size()) break;
+
+            char c = path[i];
+            if (c == '|' || c == '!' || c == '<' || c == '>' || c == '"') {
+                return true;
+            }
+
+            size_t tokenEnd = i;
+            while (tokenEnd < path.size() &&
+                   !std::isspace(static_cast<unsigned char>(path[tokenEnd]))) {
+                tokenEnd++;
+            }
+            std::string_view token(path.data() + i, tokenEnd - i);
+            size_t colonPos = token.find(':');
+            size_t slashPos = token.find('/');
+            if (colonPos != std::string_view::npos && colonPos > 0 &&
+                slashPos == std::string_view::npos) {
+                std::string filterName(token.substr(0, colonPos));
+                if (isKnownFilter(me::toLower(filterName))) return true;
+            }
+            i = tokenEnd;
+        }
+        return false;
+    }
+
+    static void stripEditorLocationSuffix(std::string& path) {
+        size_t lastSlash = path.find_last_of('/');
+        for (int component = 0; component < 2; component++) {
+            size_t colon = path.find_last_of(':');
+            if (colon == std::string::npos ||
+                (lastSlash != std::string::npos && colon < lastSlash) ||
+                colon + 1 >= path.size()) {
+                return;
+            }
+
+            bool digitsOnly = true;
+            for (size_t i = colon + 1; i < path.size(); i++) {
+                if (!std::isdigit(static_cast<unsigned char>(path[i]))) {
+                    digitsOnly = false;
+                    break;
+                }
+            }
+            if (!digitsOnly) return;
+            path.erase(colon);
+        }
+    }
+
     static bool isKnownFilter(const std::string& name) {
         static const std::unordered_set<std::string> filters = {
             // Phase 2 filters

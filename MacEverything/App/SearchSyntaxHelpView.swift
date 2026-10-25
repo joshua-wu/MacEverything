@@ -27,111 +27,111 @@ struct SearchSyntaxHelpView: View {
     // MARK: - Sections
 
     private var basicSearchSection: some View {
-        SyntaxSection(title: "Basic Search") {
-            SyntaxRow("hello", "Substring match (case-insensitive)")
-            SyntaxRow("hello world", "AND — both must match")
-            SyntaxRow("\"exact phrase\"", "Quoted exact phrase match")
+        SyntaxSection(title: "基础搜索") {
+            SyntaxRow("hello", "子字符串匹配（不区分大小写）")
+            SyntaxRow("hello world", "AND — 两个关键词都需要匹配")
+            SyntaxRow("\"exact phrase\"", "引号内的完整短语匹配")
         }
     }
 
     private var booleanSection: some View {
-        SyntaxSection(title: "Boolean Operators") {
-            SyntaxRow("A | B", "OR — either matches")
-            SyntaxRow("!A", "NOT — exclude matches")
-            SyntaxRow("<A | B>", "Grouping with angle brackets")
-            SyntaxNote("Example: <hello | world> .txt")
+        SyntaxSection(title: "布尔运算符") {
+            SyntaxRow("A | B", "OR — 任意一个匹配即可")
+            SyntaxRow("!A", "NOT — 排除匹配项")
+            SyntaxRow("<A | B>", "使用尖括号进行分组")
+            SyntaxNote("示例：<hello | world> .txt")
         }
     }
 
     private var wildcardSection: some View {
-        SyntaxSection(title: "Wildcards / Glob") {
-            SyntaxRow("*", "Zero or more characters")
-            SyntaxRow("?", "Exactly one character")
-            SyntaxRow("*.txt", "Files ending with .txt")
-            SyntaxRow("test*", "Files starting with test")
-            SyntaxRow("*keyword*", "Files containing keyword")
+        SyntaxSection(title: "通配符 / Glob") {
+            SyntaxRow("*", "零个或多个字符")
+            SyntaxRow("?", "恰好一个字符")
+            SyntaxRow("*.txt", "以 .txt 结尾的文件")
+            SyntaxRow("test*", "以 test 开头的文件")
+            SyntaxRow("*keyword*", "包含 keyword 的文件")
         }
     }
 
     private var regexSection: some View {
-        SyntaxSection(title: "Regex") {
-            SyntaxRow("regex:pattern", "ECMAScript regex (case-insensitive)")
-            SyntaxNote("Example: regex:^test  regex:\\.cpp$")
+        SyntaxSection(title: "正则表达式") {
+            SyntaxRow("regex:pattern", "ECMAScript 正则表达式（不区分大小写）")
+            SyntaxNote("示例：regex:^test  regex:\\.cpp$")
         }
     }
 
     private var extensionFilterSection: some View {
-        SyntaxSection(title: "Extension Filter") {
-            SyntaxRow("ext:cpp", "Files with .cpp extension")
-            SyntaxRow("ext:cpp;h;hpp", "Multiple extensions (semicolon-separated)")
+        SyntaxSection(title: "扩展名筛选") {
+            SyntaxRow("ext:cpp", "只匹配 .cpp 扩展名文件")
+            SyntaxRow("ext:cpp;h;hpp", "多个扩展名，用分号分隔")
         }
     }
 
     private var sizeFilterSection: some View {
-        SyntaxSection(title: "Size Filter") {
-            SyntaxRow("size:>1mb", "Larger than 1 MB")
-            SyntaxRow("size:<500kb", "Smaller than 500 KB")
-            SyntaxRow("size:>=1gb", "At least 1 GB")
-            SyntaxRow("size:100kb..1mb", "Between 100 KB and 1 MB")
-            SyntaxNote("Units: b, kb/k, mb/m, gb/g, tb/t")
+        SyntaxSection(title: "大小筛选") {
+            SyntaxRow("size:>1mb", "大于 1 MB")
+            SyntaxRow("size:<500kb", "小于 500 KB")
+            SyntaxRow("size:>=1gb", "至少 1 GB")
+            SyntaxRow("size:100kb..1mb", "介于 100 KB 和 1 MB 之间")
+            SyntaxNote("单位：b, kb/k, mb/m, gb/g, tb/t")
         }
     }
 
     private var typeFilterSection: some View {
-        SyntaxSection(title: "Type Filter") {
-            SyntaxRow("file:", "Match only files")
-            SyntaxRow("folder:", "Match only directories")
-            SyntaxRow("type:file", "Same as file:")
-            SyntaxRow("type:folder", "Same as folder:")
+        SyntaxSection(title: "类型筛选") {
+            SyntaxRow("file:", "只匹配文件")
+            SyntaxRow("folder:", "只匹配文件夹")
+            SyntaxRow("type:file", "等同于 file:")
+            SyntaxRow("type:folder", "等同于 folder:")
         }
     }
 
     private var pathFilterSection: some View {
-        SyntaxSection(title: "Path Filter") {
-            SyntaxRow("path:keyword", "Path contains keyword")
-            SyntaxRow("nopath:keyword", "Path does not contain keyword")
-            SyntaxRow("parent:dirname", "Immediate parent matches")
-            SyntaxRow("depth:<3", "Directory depth less than 3")
-            SyntaxRow("depth:>5", "Directory depth greater than 5")
+        SyntaxSection(title: "路径筛选") {
+            SyntaxRow("path:keyword", "路径包含 keyword")
+            SyntaxRow("nopath:keyword", "路径不包含 keyword")
+            SyntaxRow("parent:dirname", "直接父级目录匹配")
+            SyntaxRow("depth:<3", "目录深度小于 3")
+            SyntaxRow("depth:>5", "目录深度大于 5")
         }
     }
 
     private var dateFilterSection: some View {
-        SyntaxSection(title: "Date Filter") {
-            SyntaxNote("Prefixes: dm: (modified)  dc: (created)  da: (accessed)")
-            SyntaxRow("dm:today", "Modified today")
-            SyntaxRow("dm:yesterday", "Modified yesterday")
-            SyntaxRow("dm:thisweek", "Modified this week")
-            SyntaxRow("dm:lastmonth", "Modified last month")
-            SyntaxRow("dm:last7days", "Modified in the last 7 days")
-            SyntaxRow("dm:last3months", "Modified in the last 3 months")
-            SyntaxRow("dm:2024-01-15", "Modified on specific date")
-            SyntaxRow("dm:>2024-01", "Modified after January 2024")
-            SyntaxRow("dm:2024-01..2024-06", "Modified between Jan and Jun 2024")
-            SyntaxNote("Also: datemodified:  datecreated:  dateaccessed:")
+        SyntaxSection(title: "日期筛选") {
+            SyntaxNote("前缀：dm:（修改时间） dc:（创建时间） da:（访问时间）")
+            SyntaxRow("dm:today", "今天修改")
+            SyntaxRow("dm:yesterday", "昨天修改")
+            SyntaxRow("dm:thisweek", "本周修改")
+            SyntaxRow("dm:lastmonth", "上个月修改")
+            SyntaxRow("dm:last7days", "最近 7 天内修改")
+            SyntaxRow("dm:last3months", "最近 3 个月内修改")
+            SyntaxRow("dm:2024-01-15", "指定日期修改")
+            SyntaxRow("dm:>2024-01", "2024 年 1 月之后修改")
+            SyntaxRow("dm:2024-01..2024-06", "2024 年 1 月到 6 月之间修改")
+            SyntaxNote("也支持：datemodified:  datecreated:  dateaccessed:")
         }
     }
 
     private var lengthFilterSection: some View {
-        SyntaxSection(title: "Name Length Filter") {
-            SyntaxRow("len:>10", "Filename longer than 10 chars")
-            SyntaxRow("len:<5", "Filename shorter than 5 chars")
-            SyntaxRow("len:>=8", "Filename at least 8 chars")
+        SyntaxSection(title: "文件名长度筛选") {
+            SyntaxRow("len:>10", "文件名长度大于 10 个字符")
+            SyntaxRow("len:<5", "文件名长度小于 5 个字符")
+            SyntaxRow("len:>=8", "文件名长度至少 8 个字符")
         }
     }
 
     private var modifierSection: some View {
-        SyntaxSection(title: "Match Modifiers") {
-            SyntaxRow("case:term", "Force case-sensitive match")
-            SyntaxRow("nocase:term", "Force case-insensitive match")
-            SyntaxRow("ww:hello", "Whole word match")
-            SyntaxRow("wfn:readme", "Whole filename match (without extension)")
-            SyntaxNote("Aliases: wholeword:  wholefilename:")
+        SyntaxSection(title: "匹配修饰符") {
+            SyntaxRow("case:term", "强制区分大小写匹配")
+            SyntaxRow("nocase:term", "强制不区分大小写匹配")
+            SyntaxRow("ww:hello", "整词匹配")
+            SyntaxRow("wfn:readme", "完整文件名匹配（不含扩展名）")
+            SyntaxNote("别名：wholeword:  wholefilename:")
         }
     }
 
     private var typeMacroSection: some View {
-        SyntaxSection(title: "File Type Macros") {
+        SyntaxSection(title: "文件类型快捷筛选") {
             SyntaxRow("audio:", "mp3, wav, flac, aac, ogg, m4a, wma, alac")
             SyntaxRow("video:", "mp4, avi, mkv, mov, wmv, flv, webm, m4v")
             SyntaxRow("pic:", "jpg, png, gif, bmp, tiff, webp, svg, heic ...")
@@ -142,26 +142,28 @@ struct SearchSyntaxHelpView: View {
     }
 
     private var structuredPathSection: some View {
-        SyntaxSection(title: "Structured Path Query") {
-            SyntaxRow("/abc/def", "Name matches def, path contains abc")
-            SyntaxRow("/abc/def/", "Directory named def under abc")
-            SyntaxRow("/abc/def/*", "List children of def under abc")
-            SyntaxRow("/abc/*/def", "Non-adjacent: abc and def with gaps")
-            SyntaxNote("Path segments are matched right-to-left")
+        SyntaxSection(title: "结构化路径查询") {
+            SyntaxRow("/abc/def", "文件名匹配 def，路径包含 abc")
+            SyntaxRow("/abc/def/", "abc 下名为 def 的目录")
+            SyntaxRow("/abc/def/*", "列出 abc 下 def 目录的子项")
+            SyntaxRow("/abc/*/def", "非相邻路径段：abc 和 def 中间可有其它目录")
+            SyntaxRow("/Users/me/My Folder/file.md", "可直接粘贴包含空格的完整路径")
+            SyntaxRow("/path/file.swift:42:7", "自动忽略编辑器的行号和列号后缀")
+            SyntaxNote("路径段会从右往左匹配；粘贴完整路径时不需要手动加引号")
         }
     }
 
     private var contentSearchSection: some View {
-        SyntaxSection(title: "Content Search") {
-            SyntaxRow("content:keyword", "Search file contents for keyword")
+        SyntaxSection(title: "内容搜索") {
+            SyntaxRow("content:keyword", "在文件内容中搜索 keyword")
         }
     }
 
     private var tildeSection: some View {
-        SyntaxSection(title: "Tilde Expansion") {
-            SyntaxRow("~/Downloads", "Expands ~ to your home directory")
-            SyntaxRow("~/*.txt", "Glob in home directory")
-            SyntaxNote("Only expanded when ~ is at the start of the query")
+        SyntaxSection(title: "波浪号展开") {
+            SyntaxRow("~/Downloads", "将 ~ 展开为你的用户主目录")
+            SyntaxRow("~/*.txt", "在用户主目录中使用 Glob 匹配")
+            SyntaxNote("只有当 ~ 位于查询开头时才会展开")
         }
     }
 }

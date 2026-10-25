@@ -3,7 +3,8 @@ CXXFLAGS = -std=c++20 -O2 -Wall -Wextra
 FRAMEWORKS = -framework CoreServices
 CORE_SRCS = $(wildcard MacEverything/Core/*.cpp)
 RE2_PREFIX = /opt/homebrew/opt/re2
-RE2_CFLAGS = -I$(RE2_PREFIX)/include
+ABSEIL_PREFIX = /opt/homebrew/opt/abseil
+RE2_CFLAGS = -I$(RE2_PREFIX)/include -I$(ABSEIL_PREFIX)/include
 RE2_LDFLAGS = -L$(RE2_PREFIX)/lib -lre2
 
 # === Build targets ===
