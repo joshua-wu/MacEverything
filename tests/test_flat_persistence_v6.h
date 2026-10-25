@@ -879,6 +879,100 @@ static void testV6InodeDevIdRoundtrip() {
     fs::remove_all(tmpDir);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 13: Mapped storage — load maps the file instead of copying it, the
+// engine keeps working on the mappings, and fullRewrite remaps in place.
+// ─────────────────────────────────────────────────────────────────────────────
+#include <mach/mach.h>
+static uint64_t v6PhysFootprint() {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) return 0;
+    return info.phys_footprint;
+}
+
+static void testV6MappedStorage() {
+    std::cout << "\n--- v6: mapped storage and remap after rewrite ---\n";
+
+    std::string tmpDir = (fs::temp_directory_path() / "test_v6_mapped").string()
+                         + "_" + std::to_string(getpid());
+    fs::create_directories(tmpDir);
+    std::string v6Path = tmpDir + "/index.v6";
+    const uint32_t n = 300000;
+
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> recs;
+        recs.reserve(n);
+        for (uint32_t i = 0; i < n; i++) {
+            recs.push_back({"mapped_file_" + std::to_string(i) + ".dat",
+                            "/mapped/dir" + std::to_string(i % 997), 1, i, 1000000 + static_cast<time_t>(i), i + 1, 1});
+        }
+        recs.push_back({"mapped", "/", 2, 0, 1, 1, 1});
+        for (uint32_t d = 0; d < 997; d++) {
+            recs.push_back({"dir" + std::to_string(d), "/mapped", 2, 0, 1, 2000000 + d, 1});
+        }
+        engine.loadRecords(std::move(recs));
+        FlatIndexWriter writer(v6Path);
+        IndexMetadata meta;
+        check(writer.fullRewrite(engine, meta), "V6-13: write");
+    }
+    check(fs::file_size(v6Path) % me::kMapAlign == 0, "V6-13: file padded to map alignment");
+
+    uint64_t before = v6PhysFootprint();
+    auto engine = std::make_shared<SearchEngine>();
+    FlatIndexWriter reader(v6Path);
+    IndexMetadata loadedMeta;
+    check(reader.load(*engine, &loadedMeta), "V6-13: load succeeds");
+    check(reader.loadedVersion() == FlatIndexWriter::kVersion, "V6-13: loaded mappable version");
+    engine->completePhase2();
+    uint64_t grown = v6PhysFootprint() - before;
+    // A full scan reads every mapped page.
+    auto all = engine->query("mapped_file_", 0);
+    check(all.size() == n, "V6-13: full scan finds all records");
+    uint64_t fileSize = fs::file_size(v6Path);
+    std::cout << "    footprint growth " << (grown >> 10) << " KB for a " << (fileSize >> 10) << " KB index\n";
+    check(grown < fileSize / 4, "V6-13: loaded index is not copied into process memory");
+
+    // Mutations on mapped columns: in-place update, removal, append.
+    FileRecord upd{"mapped_file_5.dat", "/mapped/dir5", 1, 777, 2000000000, 6, 1};
+    engine->updateByPath("/mapped/dir5/mapped_file_5.dat", std::move(upd));
+    check(engine->removeByPath("/mapped/dir6/mapped_file_6.dat"), "V6-13: remove on mapped storage");
+    engine->addRecord({"newdir", "/mapped", 2, 0, 1, 999998, 1});
+    engine->addRecord({"brand_new.dat", "/mapped/newdir", 1, 1, 3000000000, 999999, 1});
+    check(engine->query("brand_new.dat", 10).size() == 1, "V6-13: appended record searchable");
+    check(engine->query("mapped_file_6.dat", 10).empty(), "V6-13: removed record gone");
+    check(engine->query("/mapped/newdir/*", 10).size() == 1, "V6-13: dir listing sees appended record");
+    // dir6 held records 6, 6+997, ...: 301 of them, minus the removed one.
+    check(engine->query("/mapped/dir6/*", 0).size() == 300, "V6-13: dir listing of mapped dir after removal");
+    check(engine->recentIndices(1).size() == 1 &&
+          engine->getRecord(engine->recentIndices(1)[0]).name == "brand_new.dat", "V6-13: recent cache updated");
+
+    // Rewrite: the engine switches to mappings of the new file, still correct.
+    check(reader.fullRewrite(*engine, loadedMeta), "V6-13: rewrite after mutations");
+    check(engine->query("brand_new.dat", 10).size() == 1, "V6-13: appended record survives remap");
+    check(engine->query("mapped_file_6.dat", 10).empty(), "V6-13: removal survives remap");
+    uint32_t i5 = engine->indexForPath("/mapped/dir5/mapped_file_5.dat");
+    check(i5 != UINT32_MAX && engine->getRecord(i5).size == 777, "V6-13: in-place update survives remap");
+    engine->addRecord({"after_remap.dat", "/mapped/dir1", 1, 1, 1, 1000001, 1});
+    check(engine->query("/mapped/dir1/after_remap", 10).size() == 1, "V6-13: mutation after remap");
+
+    // A fresh load of the rewritten file agrees.
+    check(reader.fullRewrite(*engine, loadedMeta), "V6-13: second rewrite");
+    SearchEngine engine3;
+    FlatIndexWriter reader3(v6Path);
+    check(reader3.load(engine3, nullptr), "V6-13: reload rewritten file");
+    engine3.completePhase2();
+    check(engine3.liveRecordCount() == engine->liveRecordCount(), "V6-13: live counts agree");
+    check(engine3.query("after_remap.dat", 10).size() == 1, "V6-13: reloaded engine has new record");
+    check(engine3.query("/mapped/dir5/*", 0).size() == 301 && engine->query("/mapped/dir5/*", 0).size() == 301,
+          "V6-13: dir lists agree after reload");
+    check(engine3.query("/mapped/dir1/*", 0).size() == 302, "V6-13: reloaded dir list includes record added after remap");
+
+    fs::remove_all(tmpDir);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Runner
 // ─────────────────────────────────────────────────────────────────────────────
@@ -897,6 +991,7 @@ static void runFlatPersistenceV6Tests() {
     testV6PathPoolIntegrity();         // Test 10
     testV6Phase2ConcurrentQueries();   // Test 11
     testV6InodeDevIdRoundtrip();       // Test 12
+    testV6MappedStorage();             // Test 13
 
     std::cout << "\n";
 }

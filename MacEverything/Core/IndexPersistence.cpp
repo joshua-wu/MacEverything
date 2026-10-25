@@ -39,6 +39,12 @@ uint64_t IndexPersistence::load() {
             lastEventId = meta.lastEventId;
             LOG_INFO("IndexPersistence", "Loaded v6 flat index, lastEventId=" << lastEventId
                       << ", liveRecords=" << engine_->liveRecordCount());
+            if (flatWriter_->loadedVersion() < FlatIndexWriter::kVersion) {
+                // Rewrite in the mappable layout so the index stops living in the heap.
+                if (flatWriter_->fullRewrite(*engine_, meta)) {
+                    LOG_INFO("IndexPersistence", "Migrated v6 index to mappable layout");
+                }
+            }
         } else {
             LOG_ERROR("IndexPersistence", "v6 flat index corrupt, trying paged format");
         }

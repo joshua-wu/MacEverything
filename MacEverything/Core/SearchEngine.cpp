@@ -60,7 +60,7 @@ void SearchEngine::pushRecord(FileRecord&& rec) {
 }
 
 void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
 
     const size_t n = records.size();
 
@@ -145,7 +145,7 @@ void SearchEngine::loadRecordsV5(std::vector<FileRecord>&& records,
                                   std::vector<uint32_t>&& pathIndices,
                                   StringPool&& pathDict,
                                   StringPool&& lowerPathDict) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
 
     const size_t n = records.size();
 
@@ -178,7 +178,7 @@ void SearchEngine::loadRecordsV5(std::vector<FileRecord>&& records,
     // Install pre-built path dictionaries (skip path dedup + internPath loop)
     pathPool_ = std::move(pathDict);
     lowerPathPool_ = std::move(lowerPathDict);
-    pathIndices_ = std::move(pathIndices);
+    pathIndices_.assign(pathIndices.begin(), pathIndices.end());
 
     rebuildPathLookupsUnlocked();
     uint32_t actualLive = rebuildPathIndexUnlocked();
@@ -219,7 +219,7 @@ uint32_t SearchEngine::recordCount() const {
 }
 
 uint32_t SearchEngine::addRecord(FileRecord&& record) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
 
     std::string fullPath = makeFullPath(record.path, record.name);
     if (wal_) wal_->append(WALOp::Add, fullPath, record);
@@ -305,7 +305,7 @@ uint32_t SearchEngine::rebuildPathIndexUnlocked() {
     auto keyOf = recordKeyOf();
 
     // Hash keys in parallel, insert sequentially (last record wins on duplicates).
-    std::vector<uint64_t> hashes(n);
+    Column<uint64_t> hashes(n);
     {
         unsigned numThreads = std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
         uint32_t chunk = (n + numThreads - 1) / numThreads;
@@ -423,8 +423,7 @@ std::vector<uint32_t> SearchEngine::collectSubtreeUnlocked(const std::vector<std
     }
     if (!anyMatched) return result;
 
-    bool haveChildLists = !phase2Pending_.load(std::memory_order_acquire) &&
-                          pathIdxToRecords_.size() >= pathCount;
+    bool haveChildLists = dirRecordsBuilt_ && pathIdxToRecords_.size() >= pathCount;
     if (haveChildLists) {
         for (uint32_t pi = 0; pi < pathCount; pi++) {
             if (!matched[pi]) continue;
@@ -453,12 +452,12 @@ bool SearchEngine::removeByPathUnlocked(const std::string& fullPath) {
 }
 
 bool SearchEngine::removeByPath(const std::string& fullPath) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     return removeByPathUnlocked(fullPath);
 }
 
 uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     auto victims = collectSubtreeUnlocked({me::toLower(pathPrefix)});
     for (uint32_t idx : victims) removeRecordUnlocked(idx, true);
     return static_cast<uint32_t>(victims.size());
@@ -466,7 +465,7 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
 
 uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
                                          std::vector<FileRecord>&& freshRecords) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
 
     // ── Phase 1: Tombstone old records beneath prefix ──
     // The directory's own record is kept: scans return only its contents.
@@ -495,13 +494,13 @@ void SearchEngine::updateByPathUnlocked(const std::string& fullPath, FileRecord&
 }
 
 void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& updated) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     updateByPathUnlocked(fullPath, std::move(updated));
 }
 
 void SearchEngine::batchMutate(std::vector<MutationOp>&& ops) {
     if (ops.empty()) return;
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     // Removed directories: FSEvents does not reliably report every descendant
     // (e.g. rm -rf or a move coalesced into one batch), so drop whole subtrees.
     std::vector<std::string> removedDirs;
@@ -525,14 +524,14 @@ void SearchEngine::batchMutate(std::vector<MutationOp>&& ops) {
 std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     // ── Phase 1: Snapshot under shared_lock ──
     // Queries continue unblocked during snapshot copy.
-    std::vector<uint8_t> snapTypes;
-    std::vector<uint64_t> snapSizes;
-    std::vector<int64_t> snapModTimes;
-    std::vector<uint64_t> snapInodes;
-    std::vector<int32_t> snapDevIds;
+    Column<uint8_t> snapTypes;
+    Column<uint64_t> snapSizes;
+    Column<int64_t> snapModTimes;
+    Column<uint64_t> snapInodes;
+    Column<int32_t> snapDevIds;
     StringPool snapNamePool;
     StringPool snapOrigNamePool;
-    std::vector<uint32_t> snapPathIndices;
+    Column<uint32_t> snapPathIndices;
     StringPool snapPathPool;
     std::vector<bool> snapIndexed;
     uint32_t snapSize;
@@ -563,11 +562,11 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     std::unordered_map<uint32_t, uint32_t> remap;
     remap.reserve(snapSize);
 
-    std::vector<uint8_t> cdTypes;
-    std::vector<uint64_t> cdSizes;
-    std::vector<int64_t> cdModTimes;
-    std::vector<uint64_t> cdInodes;
-    std::vector<int32_t> cdDevIds;
+    Column<uint8_t> cdTypes;
+    Column<uint64_t> cdSizes;
+    Column<int64_t> cdModTimes;
+    Column<uint64_t> cdInodes;
+    Column<int32_t> cdDevIds;
     cdTypes.reserve(snapSize);
     cdSizes.reserve(snapSize);
     cdModTimes.reserve(snapSize);
@@ -575,7 +574,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     cdDevIds.reserve(snapSize);
     StringPool cdNamePool;
     StringPool cdOrigNamePool;
-    std::vector<uint32_t> cdPathIndices;
+    Column<uint32_t> cdPathIndices;
     cdPathIndices.reserve(snapSize);
     StringPool cdPathPool;
     StringPool cdLowerPathPool;
@@ -635,7 +634,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     // This lock is held only long enough to move data and replay the small
     // number of mutations that occurred during Phase 2 (~milliseconds).
     {
-        std::unique_lock lock(mutex_);
+        WriteGuard lock(*this);
 
         // Move out current (mutated-during-Phase2) state
         auto oldTypes = std::move(types_);
@@ -664,6 +663,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         nameTrigramIndex_ = std::move(cdTrigramIndex);
         pathTrigramIndex_ = std::move(cdPathTrigramIndex);
         pathIdxToRecords_ = std::move(cdPathIdxToRecords);
+        dirRecordsBuilt_ = true;
         extensionIndex_ = std::move(cdExtensionIndex);
         recentCache_ = std::move(cdRecentCache);
         liveCount_.store(cdLiveCount, std::memory_order_relaxed);
@@ -715,12 +715,12 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
 }
 
 void SearchEngine::attachWAL(std::shared_ptr<IndexWAL> wal) {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     wal_ = std::move(wal);
 }
 
 void SearchEngine::detachWAL() {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     wal_.reset();
 }
 
@@ -737,25 +737,28 @@ std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
 }
 
 std::set<SearchEngine::RecentEntry>
-SearchEngine::buildRecentCacheFromData(const std::vector<uint8_t>& types,
-                                       const std::vector<int64_t>& modTimes,
+SearchEngine::buildRecentCacheFromData(const Column<uint8_t>& types,
+                                       const Column<int64_t>& modTimes,
                                        uint32_t cacheSize) {
+    // Bounded min-heap of the newest entries: O(N log K) time, O(K) memory.
     struct TimePair { time_t modTime; uint32_t index; };
-    std::vector<TimePair> pairs;
-    pairs.reserve(types.size());
-    for (size_t i = 0; i < types.size(); i++) {
+    auto newer = [](const TimePair& a, const TimePair& b) { return a.modTime > b.modTime; };
+    std::vector<TimePair> top;
+    top.reserve(cacheSize + 1);
+    for (size_t i = 0; i < types.size() && cacheSize > 0; i++) {
         if (types[i] == 0) continue;
-        pairs.push_back({static_cast<time_t>(modTimes[i]), static_cast<uint32_t>(i)});
-    }
-    std::set<RecentEntry> cache;
-    size_t k = std::min(pairs.size(), static_cast<size_t>(cacheSize));
-    if (k > 0) {
-        std::partial_sort(pairs.begin(), pairs.begin() + k, pairs.end(),
-                          [](const TimePair& a, const TimePair& b) { return a.modTime > b.modTime; });
-        for (size_t i = 0; i < k; i++) {
-            cache.insert({pairs[i].modTime, pairs[i].index});
+        TimePair p{static_cast<time_t>(modTimes[i]), static_cast<uint32_t>(i)};
+        if (top.size() < cacheSize) {
+            top.push_back(p);
+            std::push_heap(top.begin(), top.end(), newer);
+        } else if (p.modTime > top.front().modTime) {
+            std::pop_heap(top.begin(), top.end(), newer);
+            top.back() = p;
+            std::push_heap(top.begin(), top.end(), newer);
         }
     }
+    std::set<RecentEntry> cache;
+    for (const auto& p : top) cache.insert({p.modTime, p.index});
     return cache;
 }
 
@@ -801,7 +804,7 @@ std::vector<FileRecord> SearchEngine::exportRecords() const {
 void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
     if (entries.empty()) return;
 
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
 
     for (auto& e : entries) {
         switch (e.op) {

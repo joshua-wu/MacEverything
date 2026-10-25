@@ -5,41 +5,50 @@
 #include <thread>
 
 // ---------------------------------------------------------------------------
-// v6 Flat SoA: loadRecordsV6, completePhase2, snapshotForV6
+// Flat storage: loadStorage, persistStorage, completePhase2
 // ---------------------------------------------------------------------------
 
-void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
-                                  StringPool&& namePool,
-                                  std::vector<uint32_t>&& pathIndices,
-                                  StringPool&& pathPool,
-                                  StringPool&& lowerPathPool,
-                                  std::vector<uint8_t>&& types,
-                                  std::vector<uint64_t>&& sizes,
-                                  std::vector<int64_t>&& modTimes,
-                                  std::vector<uint64_t>&& inodes,
-                                  std::vector<int32_t>&& devIds) {
-    std::unique_lock lock(mutex_);
+void SearchEngine::loadStorage(Storage&& st) {
+    WriteGuard lock(*this);
 
-    uint32_t n = origNamePool.entryCount();
+    uint32_t n = st.origNamePool.entryCount();
 
-    // Install SoA columns directly (zero-copy from v6 file)
-    origNamePool_ = std::move(origNamePool);
-    namePool_ = std::move(namePool);
-    pathIndices_ = std::move(pathIndices);
-    pathPool_ = std::move(pathPool);
-    lowerPathPool_ = std::move(lowerPathPool);
-    types_ = std::move(types);
-    sizes_ = std::move(sizes);
-    modTimes_ = std::move(modTimes);
-    inodes_ = std::move(inodes);
-    devIds_ = std::move(devIds);
+    origNamePool_ = std::move(st.origNamePool);
+    namePool_ = std::move(st.namePool);
+    pathIndices_ = std::move(st.pathIndices);
+    pathPool_ = std::move(st.pathPool);
+    lowerPathPool_ = std::move(st.lowerPathPool);
+    types_ = std::move(st.types);
+    sizes_ = std::move(st.sizes);
+    modTimes_ = std::move(st.modTimes);
+    inodes_ = std::move(st.inodes);
+    devIds_ = std::move(st.devIds);
 
-    rebuildPathLookupsUnlocked();
-    uint32_t actualLive = rebuildPathIndexUnlocked();
-
+    uint32_t actualLive;
+    if (st.hasLookups) {
+        pathLookup_ = std::move(st.pathLookup);
+        lowerPathLookup_ = std::move(st.lowerPathLookup);
+        pathIndex_ = std::move(st.pathIndex);
+        actualLive = st.liveCount;
+    } else {
+        rebuildPathLookupsUnlocked();
+        actualLive = rebuildPathIndexUnlocked();
+    }
     liveCount_.store(actualLive, std::memory_order_relaxed);
 
-    // Phase 2: defer trigram index building to background
+    if (st.hasDirRecords) {
+        pathIdxToRecords_ = std::move(st.dirRecords);
+        dirRecordsBuilt_ = true;
+    } else {
+        pathIdxToRecords_ = {};
+        dirRecordsBuilt_ = false;
+    }
+    nameTrigramIndex_.clear();
+    pathTrigramIndex_.clear();
+    extensionIndex_.clear();
+    recentCache_.clear();
+
+    // Phase 2: defer secondary index building to background
     phase2Pending_.store(true, std::memory_order_release);
     phase2StartRecordCount_ = static_cast<uint32_t>(types_.size());
 
@@ -48,23 +57,82 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
     dirtyPages_.assign(pageCount, false);
     fullRewriteNeeded_.store(false, std::memory_order_relaxed);
 
-    LOG_INFO("SearchEngine", "loadRecordsV6: loaded " << n << " records (" << actualLive
-             << " live), Phase 2 pending");
+    LOG_INFO("SearchEngine", "loadStorage: loaded " << n << " records (" << actualLive
+             << " live, lookups " << (st.hasLookups ? "loaded" : "rebuilt")
+             << ", dir lists " << (st.hasDirRecords ? "loaded" : "deferred") << "), Phase 2 pending");
+}
+
+bool SearchEngine::persistStorage(const std::function<bool(const StorageView&)>& write,
+                                  const std::function<bool(Storage&)>& reload) {
+    std::lock_guard<std::mutex> gate(writeGate_);
+    {
+        std::shared_lock lock(mutex_);
+        StorageView view{origNamePool_, namePool_, pathIndices_, pathPool_, lowerPathPool_,
+                         types_, sizes_, modTimes_, inodes_, devIds_,
+                         pathLookup_, lowerPathLookup_, pathIndex_, pathIdxToRecords_,
+                         dirRecordsBuilt_, liveCount_.load(std::memory_order_relaxed)};
+        if (!write(view)) return false;
+    }
+
+    Storage fresh;
+    if (!reload || !reload(fresh)) {
+        LOG_ERROR("SearchEngine", "persistStorage: written copy could not be reloaded, keeping current storage");
+        return true;
+    }
+
+    std::unique_lock lock(mutex_);
+    if (!fresh.hasLookups || fresh.types.size() != types_.size() ||
+        fresh.pathPool.entryCount() != pathPool_.entryCount() ||
+        fresh.namePool.rawSize() != namePool_.rawSize()) {
+        LOG_ERROR("SearchEngine", "persistStorage: reloaded copy does not match, keeping current storage");
+        return true;
+    }
+    // Same contents, new backing: indices into the columns stay valid.
+    origNamePool_ = std::move(fresh.origNamePool);
+    namePool_ = std::move(fresh.namePool);
+    pathIndices_ = std::move(fresh.pathIndices);
+    pathPool_ = std::move(fresh.pathPool);
+    lowerPathPool_ = std::move(fresh.lowerPathPool);
+    types_ = std::move(fresh.types);
+    sizes_ = std::move(fresh.sizes);
+    modTimes_ = std::move(fresh.modTimes);
+    inodes_ = std::move(fresh.inodes);
+    devIds_ = std::move(fresh.devIds);
+    pathLookup_ = std::move(fresh.pathLookup);
+    lowerPathLookup_ = std::move(fresh.lowerPathLookup);
+    pathIndex_ = std::move(fresh.pathIndex);
+    if (fresh.hasDirRecords) {
+        pathIdxToRecords_ = std::move(fresh.dirRecords);
+        dirRecordsBuilt_ = true;
+    }
+    return true;
 }
 
 void SearchEngine::completePhase2() {
     if (!phase2Pending_.load(std::memory_order_acquire)) return;
 
+    if (!trigramIndexEnabled_) {
+        // Without trigram indices the remaining structures are cheap linear
+        // passes over the columns (tens of ms); build them in place instead of
+        // copying the columns for a lock-free build.
+        WriteGuard lock(*this);
+        if (!phase2Pending_.load(std::memory_order_acquire)) return;
+        if (!dirRecordsBuilt_) rebuildPathIdxToRecords();
+        buildExtensionIndex();
+        rebuildRecentCache();
+        phase2Pending_.store(false, std::memory_order_release);
+        LOG_INFO("SearchEngine", "Phase 2 complete: secondary indices active");
+        return;
+    }
+
     LOG_INFO("SearchEngine", "Phase 2: building secondary indices in background...");
 
     // Snapshot data needed for building indices (under shared lock)
-    // Only snapshot types_ (lightweight ~5MB for 5.5M records) instead of
-    // the full SoA data (~440MB if using FileRecord structs).
-    std::vector<uint8_t> snapTypes;
-    std::vector<int64_t> snapModTimes;
+    Column<uint8_t> snapTypes;
+    Column<int64_t> snapModTimes;
     StringPool snapNamePool;
     StringPool snapLowerPathPool;
-    std::vector<uint32_t> snapPathIndices;
+    Column<uint32_t> snapPathIndices;
     uint32_t snapPathPoolSize;
     uint32_t snapSize;
     {
@@ -72,32 +140,30 @@ void SearchEngine::completePhase2() {
         snapTypes = types_;
         snapModTimes = modTimes_;
         snapNamePool = namePool_;
-        if (trigramIndexEnabled_) snapLowerPathPool = lowerPathPool_;
+        snapLowerPathPool = lowerPathPool_;
         snapPathIndices = pathIndices_;
         snapPathPoolSize = pathPool_.entryCount();
         snapSize = static_cast<uint32_t>(types_.size());
     }
 
     // Build all indices without holding any lock (~3s)
-    decltype(nameTrigramIndex_) trigramIndex;
-    decltype(pathTrigramIndex_) pathTrigramIndex;
-    if (trigramIndexEnabled_) {
-        trigramIndex = buildTrigramIndexFromData(snapTypes, snapNamePool);
-        pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
-    }
+    auto trigramIndex = buildTrigramIndexFromData(snapTypes, snapNamePool);
+    auto pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
     auto pathIdxToRecords = buildPathIdxToRecordsFromData(snapTypes, snapPathIndices, snapPathPoolSize);
     auto recentCache = buildRecentCacheFromData(snapTypes, snapModTimes, kRecentCacheSize);
-    auto extensionIndex = buildExtensionIndexFromData(snapTypes, snapNamePool);
+    decltype(extensionIndex_) extensionIndex;
+    if (extensionIndexEnabled_) extensionIndex = buildExtensionIndexFromData(snapTypes, snapNamePool);
 
     LOG_INFO("SearchEngine", "Phase 2: indices built, swapping under lock...");
 
     // Swap under unique lock and replay mutations that occurred during build
     {
-        std::unique_lock lock(mutex_);
+        WriteGuard lock(*this);
 
         nameTrigramIndex_ = std::move(trigramIndex);
         pathTrigramIndex_ = std::move(pathTrigramIndex);
         pathIdxToRecords_ = std::move(pathIdxToRecords);
+        dirRecordsBuilt_ = true;
         recentCache_ = std::move(recentCache);
         extensionIndex_ = std::move(extensionIndex);
 
@@ -108,7 +174,7 @@ void SearchEngine::completePhase2() {
             if (snapTypes[i] != 0 && types_[i] == 0) {
                 removeTrigramsForName(i, snapNamePool.view(i));
                 removeExtensionForName(i, snapNamePool.view(i));
-                removePathTrigramsForRecord(i);
+                pathIdxToRecords_.eraseSorted(snapPathIndices[i], i);
                 replayCount++;
             }
         }
@@ -130,21 +196,4 @@ void SearchEngine::completePhase2() {
         LOG_INFO("SearchEngine", "Phase 2 complete: replayed " << replayCount
                  << " mutations, secondary indices active");
     }
-}
-
-SearchEngine::V6Snapshot SearchEngine::snapshotForV6() const {
-    std::shared_lock lock(mutex_);
-    V6Snapshot snap;
-    snap.origNamePool = origNamePool_;
-    snap.namePool = namePool_;
-    snap.pathIndices = pathIndices_;
-    snap.pathPool = pathPool_;
-    snap.lowerPathPool = lowerPathPool_;
-    snap.types = types_;
-    snap.sizes = sizes_;
-    snap.modTimes = modTimes_;
-    snap.inodes = inodes_;
-    snap.devIds = devIds_;
-    snap.liveCount = liveCount_.load(std::memory_order_relaxed);
-    return snap;
 }

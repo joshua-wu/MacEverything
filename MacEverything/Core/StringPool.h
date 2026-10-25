@@ -6,17 +6,7 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
-
-/// Reserve room for `extra` more elements, growing by ~1/16 instead of the
-/// default doubling. Index columns hold millions of entries and are loaded at
-/// exact size, so doubling on the first append after load would waste
-/// hundreds of MB; amortized cost stays O(1) with a geometric factor.
-template <class T>
-inline void reserveForAppend(std::vector<T>& v, size_t extra = 1) {
-    size_t need = v.size() + extra;
-    if (need <= v.capacity()) return;
-    v.reserve(std::max(need, v.size() + v.size() / 16 + 64));
-}
+#include "Column.h"
 
 /// Contiguous memory pool for strings.
 /// All strings are stored end-to-end in a single char buffer.
@@ -132,9 +122,8 @@ public:
         entries_.assign(entries, entries + entryCount);
     }
 
-    /// Move-based bulk load (zero-copy from pre-read vectors).
-    /// Used by v6 persistence for direct I/O without intermediate copies.
-    void loadRaw(std::vector<char>&& buffer, std::vector<Entry>&& entries) {
+    /// Move-based bulk load (zero-copy from pre-read or mapped columns).
+    void loadRaw(Column<char>&& buffer, Column<Entry>&& entries) {
         buffer_ = std::move(buffer);
         entries_ = std::move(entries);
     }
@@ -151,8 +140,8 @@ public:
     CompactResult compact(const std::vector<bool>& liveMask) const;
 
 private:
-    std::vector<char> buffer_;
-    std::vector<Entry> entries_;
+    Column<char> buffer_;
+    Column<Entry> entries_;
 };
 
 /// Result of compaction — defined outside class so StringPool is complete.

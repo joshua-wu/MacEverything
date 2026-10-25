@@ -59,6 +59,7 @@ inline void runExtensionIndexTests() {
     // 74d: ext: filter uses extension index path (not linear scan)
     {
         SearchEngine engine;
+        engine.setExtensionIndexEnabled(true); // opt-in: off by default to save memory
         // Add enough records to make timing meaningful
         for (int i = 0; i < 1000; i++) {
             std::string name = "file" + std::to_string(i) + ".txt";

@@ -124,7 +124,7 @@ std::vector<uint32_t> SearchEngine::unionPostingListsMulti(
 // ---------------------------------------------------------------------------
 
 std::unordered_map<Trigram, std::vector<uint32_t>>
-SearchEngine::buildTrigramIndexFromData(const std::vector<uint8_t>& types,
+SearchEngine::buildTrigramIndexFromData(const Column<uint8_t>& types,
                                         const StringPool& namePool) {
     std::unordered_map<Trigram, std::vector<uint32_t>> index;
     for (uint32_t i = 0; i < namePool.entryCount(); i++) {
@@ -204,7 +204,7 @@ static std::string extractExtFromName(const char* data, uint16_t len) {
 }
 
 std::unordered_map<std::string, std::vector<uint32_t>>
-SearchEngine::buildExtensionIndexFromData(const std::vector<uint8_t>& types,
+SearchEngine::buildExtensionIndexFromData(const Column<uint8_t>& types,
                                            const StringPool& namePool) {
     std::unordered_map<std::string, std::vector<uint32_t>> index;
     for (uint32_t i = 0; i < namePool.entryCount(); i++) {
@@ -220,10 +220,12 @@ SearchEngine::buildExtensionIndexFromData(const std::vector<uint8_t>& types,
 }
 
 void SearchEngine::buildExtensionIndex() {
+    if (!extensionIndexEnabled_) { extensionIndex_.clear(); return; }
     extensionIndex_ = buildExtensionIndexFromData(types_, namePool_);
 }
 
 void SearchEngine::addExtensionForRecord(uint32_t idx) {
+    if (!extensionIndexEnabled_) return;
     if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
     std::string ext = extractExtFromName(namePool_.data(idx), namePool_.length(idx));
     if (ext.empty()) return;
@@ -231,11 +233,13 @@ void SearchEngine::addExtensionForRecord(uint32_t idx) {
 }
 
 void SearchEngine::removeExtensionForRecord(uint32_t idx) {
+    if (!extensionIndexEnabled_) return;
     if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
     removeExtensionForName(idx, namePool_.view(idx));
 }
 
 void SearchEngine::removeExtensionForName(uint32_t idx, std::string_view lowerName) {
+    if (extensionIndex_.empty()) return;
     std::string ext = extractExtFromName(lowerName.data(), static_cast<uint16_t>(lowerName.size()));
     if (ext.empty()) return;
     auto it = extensionIndex_.find(ext);
@@ -275,23 +279,11 @@ SearchEngine::buildPathTrigramIndexFromData(const StringPool& lowerPathPool) {
     return index;
 }
 
-std::vector<std::vector<uint32_t>>
-SearchEngine::buildPathIdxToRecordsFromData(const std::vector<uint8_t>& types,
-                                            const std::vector<uint32_t>& pathIndices,
+DirPostings
+SearchEngine::buildPathIdxToRecordsFromData(const Column<uint8_t>& types,
+                                            const Column<uint32_t>& pathIndices,
                                             uint32_t pathPoolSize) {
-    std::vector<std::vector<uint32_t>> mapping(pathPoolSize);
-    for (size_t i = 0; i < types.size(); i++) {
-        if (types[i] == 0) continue;
-        uint32_t pi = pathIndices[i];
-        if (pi < mapping.size()) {
-            mapping[pi].push_back(static_cast<uint32_t>(i));
-        }
-    }
-    for (auto& list : mapping) {
-        std::sort(list.begin(), list.end());
-        list.shrink_to_fit();
-    }
-    return mapping;
+    return DirPostings::build(types, pathIndices, pathPoolSize);
 }
 
 void SearchEngine::buildPathTrigramIndex() {
@@ -301,27 +293,19 @@ void SearchEngine::buildPathTrigramIndex() {
 
 void SearchEngine::rebuildPathIdxToRecords() {
     pathIdxToRecords_ = buildPathIdxToRecordsFromData(types_, pathIndices_, pathPool_.entryCount());
+    dirRecordsBuilt_ = true;
 }
 
 void SearchEngine::addPathTrigramsForRecord(uint32_t idx) {
     if (idx >= pathIndices_.size()) return;
     uint32_t pi = pathIndices_[idx];
-    // Ensure pathIdxToRecords_ is large enough
-    if (pi >= pathIdxToRecords_.size()) {
-        pathIdxToRecords_.resize(pi + 1);
-    }
-    insertSorted(pathIdxToRecords_[pi], idx);
+    pathIdxToRecords_.insertSorted(pi, idx);
 }
 
 void SearchEngine::removePathTrigramsForRecord(uint32_t idx) {
     if (idx >= pathIndices_.size()) return;
     uint32_t pi = pathIndices_[idx];
-    if (pi >= pathIdxToRecords_.size()) return;
-    auto& list = pathIdxToRecords_[pi];
-    auto pos = std::lower_bound(list.begin(), list.end(), idx);
-    if (pos != list.end() && *pos == idx) {
-        list.erase(pos);
-    }
+    pathIdxToRecords_.eraseSorted(pi, idx);
 }
 
 void SearchEngine::ensurePathTrigramsForPathIdx(uint32_t pathIdx) {
@@ -357,6 +341,6 @@ std::vector<uint32_t> SearchEngine::getDirtyPageNumbers() const {
 }
 
 void SearchEngine::clearDirtyPages() {
-    std::unique_lock lock(mutex_);
+    WriteGuard lock(*this);
     std::fill(dirtyPages_.begin(), dirtyPages_.end(), false);
 }

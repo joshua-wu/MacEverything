@@ -831,7 +831,8 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     std::vector<uint32_t> extCands;
     bool extOk = false;
     {
-        auto extValues = extractExtFilterValues(*ast);
+        auto extValues = extensionIndexEnabled_ && !phase2Pending_.load(std::memory_order_acquire)
+                             ? extractExtFilterValues(*ast) : decltype(extractExtFilterValues(*ast)){};
         if (!extValues.empty()) {
             // Union posting lists for all requested extensions
             for (const auto& ext : extValues) {

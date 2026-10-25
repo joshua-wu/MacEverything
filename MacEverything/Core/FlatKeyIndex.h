@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "Column.h"
 
 /// Open-addressing hash index that maps string keys to uint32 ids without
 /// storing the keys. Each slot holds (hash32 << 32 | id) in 8 bytes; key
@@ -184,6 +185,24 @@ public:
         }
     }
 
+    /// Raw slot table, for persisting the index next to the strings it refers to.
+    const uint64_t* slotData() const { return slots_.data(); }
+    size_t slotCount() const { return slots_.size(); }
+
+    /// Install a slot table written by slotData() (e.g. a mapped file section).
+    /// The ids in it must resolve to the same keys as when it was written.
+    bool adoptSlots(Column<uint64_t>&& slots) {
+        size_t n = slots.size();
+        if (n != 0 && (n & (n - 1)) != 0) return false;
+        size_t live = 0;
+        for (uint64_t s : slots) live += s != kEmpty;
+        if (n != 0 && live * 10 > n * 7) return false;
+        slots_ = std::move(slots);
+        size_ = live;
+        mask_ = n ? n - 1 : 0;
+        return true;
+    }
+
     template <class F>
     void forEachValue(F&& f) const {
         for (uint64_t s : slots_) {
@@ -194,7 +213,7 @@ public:
 private:
     static constexpr uint64_t kEmpty = UINT64_MAX;
 
-    std::vector<uint64_t> slots_;
+    Column<uint64_t> slots_;
     size_t size_ = 0;
     size_t mask_ = 0;
 
@@ -229,7 +248,7 @@ private:
     }
 
     void rehash(size_t newCap) {
-        std::vector<uint64_t> old = std::move(slots_);
+        Column<uint64_t> old = std::move(slots_);
         slots_.assign(newCap, kEmpty);
         mask_ = newCap - 1;
         for (uint64_t s : old) {
