@@ -16,7 +16,26 @@ void DirectoryScanner::scan(const std::string& rootPath) {
     // Reset state so scanner can be reused across multiple scans
     done_.store(false, std::memory_order_relaxed);
     cancelled_.store(false, std::memory_order_relaxed);
+    failed_.store(false, std::memory_order_relaxed);
     activeTasks_.store(0, std::memory_order_relaxed);
+
+    // An empty or unreachable root would produce an empty result set, which
+    // callers reconcile against by tombstoning everything under the prefix —
+    // for an empty root that means the ENTIRE index. Refuse to run instead.
+    if (rootPath.empty()) {
+        LOG_ERROR("Scanner", "Refusing to scan: root path is empty");
+        failed_.store(true, std::memory_order_relaxed);
+        done_.store(true, std::memory_order_relaxed);
+        return;
+    }
+    struct stat probeStat;
+    if (stat(rootPath.c_str(), &probeStat) != 0) {
+        LOG_ERROR("Scanner", "Refusing to scan: root unreachable: " << rootPath
+            << " (" << strerror(errno) << ")");
+        failed_.store(true, std::memory_order_relaxed);
+        done_.store(true, std::memory_order_relaxed);
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(dedupMutex_);
         visitedDirs_.clear();

@@ -308,16 +308,39 @@ void ServiceEngine::rescanSubtree(const std::string& dir) {
     auto engine = safeEngine();
     if (!engine) return;
 
+    // An empty dir would make batchRescanPrefix tombstone the ENTIRE index
+    // (every absolute path matches the empty prefix). Skip instead.
+    if (dir.empty()) {
+        LOG_WARN("FSWatcher", "Skipping rescan: empty subtree path");
+        return;
+    }
+
+    // Blocks capture reference parameters by reference, and this block runs
+    // async on mutationQueue_ after the caller's frame (and whatever the
+    // reference points at — e.g. the local rescan set in flushPendingRescans)
+    // is gone. The dangling read intermittently yields an empty string, which
+    // used to wipe the whole index below. Copy before capturing.
+    std::string dirCopy = dir;
+
     dispatch_async(mutationQueue_, ^{
         if (shuttingDown_.load(std::memory_order_relaxed)) return;
 
         auto scanner = std::make_shared<DirectoryScanner>();
-        scanner->scan(dir);
+        scanner->scan(dirCopy);
         auto freshRecords = scanner->takeResults();
 
         if (shuttingDown_.load(std::memory_order_relaxed)) return;
 
-        engine->batchRescanPrefix(dir, std::move(freshRecords));
+        // Root became unreachable (unmounted/deleted) between scheduling and
+        // scanning, or the scan was cancelled mid-flight: the partial/empty
+        // result set does NOT mean the files are gone. Skip reconciliation so
+        // a transient mount blip can't wipe the index.
+        if (scanner->hasFailed() || scanner->isCancelled()) {
+            LOG_WARN("FSWatcher", "Skipping rescan reconcile (failed or cancelled): " << dirCopy);
+            return;
+        }
+
+        engine->batchRescanPrefix(dirCopy, std::move(freshRecords));
 
         // Compact if tombstones exceed 30%
         uint32_t total = engine->recordCount();

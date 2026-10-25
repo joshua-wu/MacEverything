@@ -50,6 +50,28 @@ static void runScannerReentryTest() {
     check(results3.size() == 1, "C5: Third scan on different dir returns exactly 1 result");
     check(results3.size() < results1.size(), "C5: Third scan has fewer entries than first (different dir)");
 
+    // ── Unreachable/empty roots must fail fast, not produce empty scans ──
+    // Regression: a rescan of an empty or unmounted root used to yield an
+    // empty result set which the caller reconciled into a full index wipe
+    // (99.99% tombstone ratio in production logs).
+    {
+        DirectoryScanner s1;
+        s1.scan("");
+        check(s1.hasFailed(), "C5: scan(\"\") refuses to run (hasFailed)");
+        check(s1.takeResults().empty(), "C5: scan(\"\") returns no results");
+
+        DirectoryScanner s2;
+        s2.scan("/definitely/not/a/real/path_" + std::to_string(getpid()));
+        check(s2.hasFailed(), "C5: scan(unreachable root) refuses to run (hasFailed)");
+        check(s2.takeResults().empty(), "C5: scan(unreachable root) returns no results");
+
+        // A reachable root must NOT be marked as failed
+        DirectoryScanner s3;
+        s3.scan(tmpDir);
+        check(!s3.hasFailed(), "C5: scan(reachable root) not marked failed");
+        check(s3.takeResults().size() > 0, "C5: scan(reachable root) still returns results");
+    }
+
     fs::remove_all(tmpDir);
     fs::remove_all(tmpDir2);
     std::cout << "\n";

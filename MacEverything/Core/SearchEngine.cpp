@@ -430,6 +430,10 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
                                          std::vector<FileRecord>&& freshRecords) {
     std::unique_lock lock(mutex_);
 
+    // An empty prefix matches every absolute path — tombstoning here would
+    // wipe the whole index. Only reconciliation of real subtrees may pass.
+    if (pathPrefix.empty()) return 0;
+
     // ── Phase 1: Tombstone old records matching prefix ──
     // Remove trigrams incrementally for each tombstoned record.
     std::string lowerPrefix = me::toLower(pathPrefix);
