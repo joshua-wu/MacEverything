@@ -22,6 +22,10 @@ struct ServiceConfig {
     std::string cachePath;   // e.g. ~/Library/Caches/com.maceverything.app
     std::string logPath;     // e.g. ~/Library/Logs/MacEverything
     uint16_t httpPort = 0;   // 0 = no HTTP server; >0 = auto-start after index is ready
+    // Include mounted network filesystems (SMB/WebDAV/NFS under /Volumes) as
+    // extra scan roots, plus periodic rescans to keep them fresh. FSEvents is
+    // unreliable on network filesystems. Opt-in: unit tests use temp roots.
+    bool scanNetworkVolumes = false;
 };
 
 /// Pure C++ orchestration engine — owns all core objects and lifecycle.
@@ -145,10 +149,13 @@ private:
     std::mutex pendingRescanMutex_;
     std::set<std::string> pendingRescanPaths_;
     dispatch_source_t rescanDebounceTimer_ = nullptr;
+    dispatch_source_t networkRescanTimer_ = nullptr;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastRescanTime_;
 
     // ── Constants ──
     static constexpr double kRescanDebounceDelaySec = 5.0;
     static constexpr double kRescanThrottleIntervalSec = 300.0;
+    static constexpr double kNetworkRescanInitialDelaySec = 300.0;
+    static constexpr double kNetworkRescanIntervalSec = 1800.0;
     static constexpr const char* kAppVersion = "1.1.0";
 };

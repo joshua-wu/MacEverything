@@ -105,6 +105,7 @@
     if (self) {
         ServiceConfig config;
         config.scanRoot = "/";
+        config.scanNetworkVolumes = true;  // index SMB/WebDAV/NFS mounts under /Volumes
         config.cachePath = PathUtils::getDefaultCachePath();
         config.logPath = PathUtils::getDefaultLogPath();
         config.httpPort = 19860;

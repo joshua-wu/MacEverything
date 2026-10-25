@@ -1,5 +1,6 @@
 #include "ServiceEngine.h"
 #include "DirectoryScanner.h"
+#include "NetworkMounts.h"
 #include "RescanDebounce.h"
 #include "Logger.h"
 #include <sys/stat.h>
@@ -182,6 +183,31 @@ void ServiceEngine::startMonitoring() {
     });
 
     isMonitoring_.store(true, std::memory_order_relaxed);
+
+    // Periodic network volume rescan: FSEvents is unreliable on network
+    // filesystems (especially WebDAV), so mounted SMB/NFS/WebDAV volumes are
+    // re-reconciled on a slow cadence to keep their index entries fresh. The
+    // debounce + throttle pipeline absorbs collisions with event-driven
+    // rescans, and rescanSubtree skips reconciliation when a volume is
+    // unreachable, so an offline NAS can't wipe its own index entries.
+    if (!config_.scanNetworkVolumes) return;
+
+    networkRescanTimer_ = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mutationQueue_);
+    dispatch_source_set_timer(networkRescanTimer_,
+        dispatch_time(DISPATCH_TIME_NOW,
+            static_cast<uint64_t>(kNetworkRescanInitialDelaySec * NSEC_PER_SEC)),
+        static_cast<uint64_t>(kNetworkRescanIntervalSec * NSEC_PER_SEC),
+        60 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(networkRescanTimer_, ^{
+        if (shuttingDown_.load(std::memory_order_relaxed)) return;
+        auto mounts = networkMountPoints();
+        if (mounts.empty()) return;
+        LOG_INFO("FSWatcher", "Periodic network volume rescan: "
+                 << mounts.size() << " mount(s)");
+        scheduleRescanForPaths(mounts);
+    });
+    dispatch_resume(networkRescanTimer_);
 }
 
 void ServiceEngine::stopMonitoring() {
@@ -192,6 +218,10 @@ void ServiceEngine::stopMonitoring() {
         if (rescanDebounceTimer_) {
             dispatch_source_cancel(rescanDebounceTimer_);
             rescanDebounceTimer_ = nullptr;
+        }
+        if (networkRescanTimer_) {
+            dispatch_source_cancel(networkRescanTimer_);
+            networkRescanTimer_ = nullptr;
         }
         pendingRescanPaths_.clear();
         lastRescanTime_.clear();
@@ -308,16 +338,39 @@ void ServiceEngine::rescanSubtree(const std::string& dir) {
     auto engine = safeEngine();
     if (!engine) return;
 
+    // An empty dir would make batchRescanPrefix tombstone the ENTIRE index
+    // (every absolute path matches the empty prefix). Skip instead.
+    if (dir.empty()) {
+        LOG_WARN("FSWatcher", "Skipping rescan: empty subtree path");
+        return;
+    }
+
+    // Blocks capture reference parameters by reference, and this block runs
+    // async on mutationQueue_ after the caller's frame (and whatever the
+    // reference points at — e.g. the local rescan set in flushPendingRescans)
+    // is gone. The dangling read intermittently yields an empty string, which
+    // used to wipe the whole index below. Copy before capturing.
+    std::string dirCopy = dir;
+
     dispatch_async(mutationQueue_, ^{
         if (shuttingDown_.load(std::memory_order_relaxed)) return;
 
         auto scanner = std::make_shared<DirectoryScanner>();
-        scanner->scan(dir);
+        scanner->scan(dirCopy);
         auto freshRecords = scanner->takeResults();
 
         if (shuttingDown_.load(std::memory_order_relaxed)) return;
 
-        engine->batchRescanPrefix(dir, std::move(freshRecords));
+        // Root became unreachable (unmounted/deleted) between scheduling and
+        // scanning, or the scan was cancelled mid-flight: the partial/empty
+        // result set does NOT mean the files are gone. Skip reconciliation so
+        // a transient mount blip can't wipe the index.
+        if (scanner->hasFailed() || scanner->isCancelled()) {
+            LOG_WARN("FSWatcher", "Skipping rescan reconcile (failed or cancelled): " << dirCopy);
+            return;
+        }
+
+        engine->batchRescanPrefix(dirCopy, std::move(freshRecords));
 
         // Compact if tombstones exceed 30%
         uint32_t total = engine->recordCount();

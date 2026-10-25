@@ -221,5 +221,34 @@ static void runBatchRescanTests() {
         check(res.size() == 1, "edge: replacement record queryable after full prefix removal");
     }
 
+    // ── Test 5: Empty prefix must be a no-op (regression: index wipe) ──
+    // An empty prefix matches every absolute path; tombstoning against it
+    // would delete the ENTIRE index. Seen in production as a 99.99% tombstone
+    // ratio when an FSEvents MustScanSubDirs event carried an empty path.
+    std::cout << "\n  --- Empty prefix regression ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> initial;
+        for (uint32_t i = 0; i < 100; i++) {
+            initial.push_back({"keep_" + std::to_string(i) + ".txt", "/data/dir", 1,
+                                static_cast<uint64_t>(i), static_cast<time_t>(i)});
+        }
+        engine.loadRecords(std::move(initial));
+
+        std::vector<FileRecord> emptyFresh;
+        uint32_t removed = engine.batchRescanPrefix("", std::move(emptyFresh));
+        check(removed == 0, "regression: empty prefix removes nothing");
+        check(engine.liveRecordCount() == 100, "regression: all 100 records survive empty-prefix rescan");
+        auto res = engine.query("keep_50");
+        check(res.size() == 1, "regression: records still queryable after empty-prefix rescan");
+
+        // Must also refuse when the caller supplies fresh records
+        std::vector<FileRecord> fresh;
+        fresh.push_back({"newfile.txt", "/data/dir", 1, 1, 9999});
+        removed = engine.batchRescanPrefix("", std::move(fresh));
+        check(removed == 0, "regression: empty prefix with fresh records removes nothing");
+        check(engine.liveRecordCount() == 100, "regression: rejected op leaves record count unchanged");
+    }
+
     std::cout << "\n";
 }

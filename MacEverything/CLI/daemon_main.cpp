@@ -121,6 +121,7 @@ int main(int argc, char* argv[]) {
     // Create ServiceEngine
     ServiceConfig config;
     config.scanRoot = opts.root;
+    config.scanNetworkVolumes = true;
     config.cachePath = opts.cacheDir;
     config.logPath = opts.logDir;
 

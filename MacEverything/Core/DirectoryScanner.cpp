@@ -16,7 +16,27 @@ void DirectoryScanner::scan(const std::string& rootPath) {
     // Reset state so scanner can be reused across multiple scans
     done_.store(false, std::memory_order_relaxed);
     cancelled_.store(false, std::memory_order_relaxed);
+    failed_.store(false, std::memory_order_relaxed);
+    allowedDevs_.clear();
     activeTasks_.store(0, std::memory_order_relaxed);
+
+    // An empty or unreachable root would produce an empty result set, which
+    // callers reconcile against by tombstoning everything under the prefix —
+    // for an empty root that means the ENTIRE index. Refuse to run instead.
+    if (rootPath.empty()) {
+        LOG_ERROR("Scanner", "Refusing to scan: root path is empty");
+        failed_.store(true, std::memory_order_relaxed);
+        done_.store(true, std::memory_order_relaxed);
+        return;
+    }
+    struct stat probeStat;
+    if (stat(rootPath.c_str(), &probeStat) != 0) {
+        LOG_ERROR("Scanner", "Refusing to scan: root unreachable: " << rootPath
+            << " (" << strerror(errno) << ")");
+        failed_.store(true, std::memory_order_relaxed);
+        done_.store(true, std::memory_order_relaxed);
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(dedupMutex_);
         visitedDirs_.clear();
@@ -55,6 +75,20 @@ void DirectoryScanner::scan(const std::string& rootPath) {
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
         workQueue_.push(rootPath);
+        // Extra roots (e.g. network volumes) are queued alongside the primary
+        // root; their devices are exempt from the cross-mount skip so traversal
+        // can descend into them. Best-effort: unreachable roots are skipped.
+        for (const auto& extra : extraRoots_) {
+            struct stat extraStat;
+            if (stat(extra.c_str(), &extraStat) == 0) {
+                allowedDevs_.insert(extraStat.st_dev);
+                workQueue_.push(extra);
+            } else {
+                LOG_WARN("Scanner", "Skipping unreachable extra root: " << extra
+                    << " (" << strerror(errno) << ")");
+            }
+        }
+        extraRoots_.clear();
     }
 
     std::vector<std::thread> threads;
@@ -258,9 +292,12 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
 
             // Process entry
             if (objtype == VDIR) {
-                // Skip cross-mount directories (autofs, devfs, NFS, etc.)
-                // These can block indefinitely on open() or produce irrelevant results.
-                if (rootDevId_ != 0 && devid != rootDevId_) {
+                // Skip cross-mount directories (autofs, devfs, etc.) unless the
+                // device belongs to an explicitly added extra root (network
+                // volumes). These can block indefinitely on open() or produce
+                // irrelevant results.
+                if (rootDevId_ != 0 && devid != rootDevId_ &&
+                    allowedDevs_.find(devid) == allowedDevs_.end()) {
                     entry = nextEntry;
                     continue;
                 }
